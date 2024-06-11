@@ -166,9 +166,12 @@ class ChatProvider extends ChangeNotifier {
     // Get the imagesUrls
     List<String> imagesUrls = getImagesUrls(isTextOnly: isTextOnly);
 
+    // user message id
+    final userMessageId = const Uuid().v4();
+
     // user message
     final userMessage = Message(
-      messageId: '',
+      messageId: userMessageId,
       chatId: chatId,
       role: Role.user,
       message: StringBuffer(message),
@@ -212,9 +215,12 @@ class ChatProvider extends ChangeNotifier {
       isTextOnly: isTextOnly,
     );
 
+   // Assistant messageId
+    final modelMessageId = const Uuid().v4();
+
     // Assistant Message
     final assistanceMessage = userMessage.copyWith(
-      messageId: '',
+      messageId: modelMessageId,
       role: Role.assistant,
       message: StringBuffer(),
       timeSent: DateTime.now(),
@@ -231,18 +237,15 @@ class ChatProvider extends ChangeNotifier {
       _inChatMessages
           .firstWhere((element) =>
               element.messageId == assistanceMessage.messageId &&
-              element.role == Role.assistant)
+              element.role.name == Role.assistant.name)
           .message
           .write(event.text);
       notifyListeners();
     }, onDone: () {
       // Save Message to Hive DB
-      
-
 
       //Set Loading to false
       setLoading(value: false);
-
     }).onError((error, stackTrace) {
       // set loading
       setLoading(value: false);
