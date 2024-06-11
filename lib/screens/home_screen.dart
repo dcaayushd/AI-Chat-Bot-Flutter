@@ -23,9 +23,9 @@ class _HomeScreenState extends State<HomeScreen> {
     const ChatScreen(),
     const ProfileScreen(),
   ]; // appBar: AppBar(
-      //   backgroundColor: Theme.of(context).colorScheme.primary,
-      //   title: const Text('AI CHAT BOT'),
-      // ),
+  //   backgroundColor: Theme.of(context).colorScheme.primary,
+  //   title: const Text('AI CHAT BOT'),
+  // ),
 
   // ? Index of current Screen
 
@@ -34,7 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-     
       body: PageView(
         controller: _pageController,
         children: _screens,
@@ -57,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.history),
+              // icon: Icon(CupertinoIcons.timelapse),
               label: 'Chat History',
             ),
             BottomNavigationBarItem(
