@@ -1,10 +1,19 @@
+// import 'package:chatbotapp/apis/api_service.dart';
+import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/screens/home_screen.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+// import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
 
 void main() async {
-  await dotenv.load(fileName: ".env");
-  runApp(const MyApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  // await dotenv.load(fileName: ".env");
+  await ChatProvider.initHive();
+  runApp(MultiProvider(providers: [
+    ChangeNotifierProvider(
+      create: (context) => ChatProvider(),
+    )
+  ], child: const MyApp()));
 }
 
 class MyApp extends StatelessWidget {

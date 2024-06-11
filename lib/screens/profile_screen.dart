@@ -12,7 +12,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
 return const Scaffold(
       body: Center(
-        child: Text('profile Screen'),
+        child: Text('Profile Screen'),
       ),
     );
   }
