@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:developer';
+import 'dart:typed_data';
 import 'package:chatbotapp/apis/api_service.dart';
 import 'package:chatbotapp/constants/constants.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
@@ -12,6 +13,7 @@ import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart' as path;
+import 'package:uuid/uuid.dart';
 
 class ChatProvider extends ChangeNotifier {
   // List of Messages
@@ -135,16 +137,185 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Set Loading 
+  // Set Loading
   void setLoading({required bool value}) {
     _isLoading = value;
     notifyListeners();
   }
 
-
-
   // Send Message to gemini and get the streamed response
-  
+  Future<void> sentMessage({
+    required String message,
+    required bool isTextOnly,
+  }) async {
+    // Set the model
+    await setModel(isTextOnly: isTextOnly);
+
+    // Set the loading
+    setLoading(value: true);
+
+    // Get the chatId
+    String chatId = getChatId();
+
+    // List of history messages
+    List<Content> history = [];
+
+    // Get the chat history
+    history = await getHistory(chatId: chatId);
+
+    // Get the imagesUrls
+    List<String> imagesUrls = getImagesUrls(isTextOnly: isTextOnly);
+
+    // user message
+    final userMessage = Message(
+      messageId: '',
+      chatId: chatId,
+      role: Role.user,
+      message: StringBuffer(message),
+      imagesUrls: imagesUrls,
+      timeSent: DateTime.now(),
+    );
+
+    // add this message to the list on inChatMessages
+    _inChatMessages.add(userMessage);
+    notifyListeners();
+
+    if (currentChatId.isEmpty) {
+      setCurrentChatId(newChatId: chatId);
+    }
+
+    // send the message to the model and wait for the response
+    await sendMessageAndWaitForResponse(
+      message: message,
+      chatId: chatId,
+      isTextOnly: isTextOnly,
+      history: history,
+      userMessage: userMessage,
+    );
+  }
+
+  // send message to the model and wait for the response
+  Future<void> sendMessageAndWaitForResponse({
+    required String message,
+    required String chatId,
+    required bool isTextOnly,
+    required List<Content> history,
+    required Message userMessage,
+  }) async {
+    // start the chat session - only send history is its text-only
+    final chatSession = _model!.startChat(
+      history: history.isEmpty || !isTextOnly ? null : history,
+    );
+    // Get content
+    final content = await getContent(
+      message: message,
+      isTextOnly: isTextOnly,
+    );
+
+    // Assistant Message
+    final assistanceMessage = userMessage.copyWith(
+      messageId: '',
+      role: Role.assistant,
+      message: StringBuffer(),
+      timeSent: DateTime.now(),
+    );
+
+    // Add this message to the list on inChatMessages
+    _inChatMessages.add(assistanceMessage);
+    notifyListeners();
+
+    // Wait for stream response
+    chatSession.sendMessageStream(content).asyncMap((event) {
+      return event;
+    }).listen((event) {
+      _inChatMessages
+          .firstWhere((element) =>
+              element.messageId == assistanceMessage.messageId &&
+              element.role == Role.assistant)
+          .message
+          .write(event.text);
+      notifyListeners();
+    }, onDone: () {
+      // Save Message to Hive DB
+      
+
+
+      //Set Loading to false
+      setLoading(value: false);
+
+    }).onError((error, stackTrace) {
+      // set loading
+      setLoading(value: false);
+    });
+  }
+
+  // get content
+  Future<Content> getContent({
+    required message,
+    required bool isTextOnly,
+  }) async {
+    if (isTextOnly) {
+      // Generate text from text-only input
+      return Content.text(message);
+    } else {
+      // Generate image from text and image input
+      final imageFutures = _imagesFileList
+          ?.map((imageFile) => imageFile.readAsBytes())
+          .toList(growable: false);
+      final imageBytes = await Future.wait(imageFutures!);
+      final prompt = TextPart(message);
+      final imageParts = imageBytes
+          .map((bytes) => DataPart('image/jpg', Uint8List.fromList(bytes)))
+          .toList();
+
+      return Content.model([prompt, ...imageParts]);
+    }
+  }
+
+  // get the imagesUrls
+  List<String> getImagesUrls({required bool isTextOnly}) {
+    List<String> imagesUrls = [];
+    if (!isTextOnly && imagesFileList != null) {
+      for (var image in imagesFileList!) {
+        imagesUrls.add(image.path);
+      }
+    }
+    return imagesUrls;
+  }
+
+  // get the chat history
+  Future<List<Content>> getHistory({required String chatId}) async {
+    List<Content> history = [];
+    if (currentChatId.isNotEmpty) {
+      await setInChatMessages(chatId: chatId);
+
+      for (var message in inChatMessages) {
+        if (message.role == Role.user) {
+          history.add(
+            Content.text(message.message.toString()),
+          );
+        } else {
+          history.add(
+            Content.model(
+              [
+                TextPart(message.message.toString()),
+              ],
+            ),
+          );
+        }
+      }
+    }
+    return history;
+  }
+
+  // get the chatId
+  String getChatId() {
+    if (currentChatId.isEmpty) {
+      return const Uuid().v4();
+    } else {
+      return currentChatId;
+    }
+  }
 
   // Init Hive Box
   static initHive() async {

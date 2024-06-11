@@ -1,11 +1,16 @@
+import 'dart:developer';
+
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 class BottomChatField extends StatefulWidget {
-  const BottomChatField({super.key, required this.chatProvider,});
+  const BottomChatField({
+    super.key,
+    required this.chatProvider,
+  });
 
-final ChatProvider chatProvider;
+  final ChatProvider chatProvider;
 
   @override
   State<BottomChatField> createState() => _BottomChatFieldState();
@@ -23,6 +28,24 @@ class _BottomChatFieldState extends State<BottomChatField> {
     textController.dispose();
     textFieldFocus.dispose();
     super.dispose();
+  }
+
+  Future<void> sendChatMessage({
+    required String message,
+    required ChatProvider chatProvider,
+    required bool isTextOnly,
+  }) async {
+    try {
+      await chatProvider.sentMessage(
+        message: message,
+        isTextOnly: isTextOnly,
+      );
+    } catch (e) {
+      log('error : $e');
+    } finally {
+      textController.clear();
+      textFieldFocus.unfocus();
+    }
   }
 
   @override
@@ -57,7 +80,16 @@ class _BottomChatFieldState extends State<BottomChatField> {
               focusNode: textFieldFocus,
               controller: textController,
               textInputAction: TextInputAction.send,
-              onSubmitted: (String value) {},
+              onSubmitted: (String value) {
+                if (value.isNotEmpty) {
+                // Send the Message
+                sendChatMessage(
+                  message: textController.text,
+                  chatProvider: widget.chatProvider,
+                  isTextOnly: true,
+                );
+              }
+              },
               decoration: InputDecoration.collapsed(
                 hintText: 'Enter a prompt...',
                 border: OutlineInputBorder(
@@ -76,8 +108,15 @@ class _BottomChatFieldState extends State<BottomChatField> {
           // ),
 
           GestureDetector(
-            onTap: (){
-              // Send the Message
+            onTap: () {
+              if (textController.text.isNotEmpty) {
+                // Send the Message
+                sendChatMessage(
+                  message: textController.text,
+                  chatProvider: widget.chatProvider,
+                  isTextOnly: true,
+                );
+              }
             },
             child: Container(
               decoration: BoxDecoration(
