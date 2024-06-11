@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:developer';
+import 'package:chatbotapp/apis/api_service.dart';
 import 'package:chatbotapp/constants/constants.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/settings.dart';
@@ -56,6 +59,92 @@ class ChatProvider extends ChangeNotifier {
 
   String get modelType => _modelType;
   bool get isLoading => _isLoading;
+
+  // Setters
+  //Set inChatMessages
+  Future<void> setInChatMessages({required String chatId}) async {
+    // Get Messages from Hive Database
+    final messagesFromDb = await loadMessagesFromDB(chatId: chatId);
+
+    for (var message in messagesFromDb) {
+      if (_inChatMessages.contains(message)) {
+        log('Message Already Exists!');
+        continue;
+      }
+      _inChatMessages.add(message);
+    }
+    notifyListeners();
+  }
+
+  // Load the Messages from Database
+  Future<List<Message>> loadMessagesFromDB({required String chatId}) async {
+    // open the box of this chatId
+    await Hive.openBox('${Constants.chatMessagesBox}$chatId');
+
+    final messageBox = Hive.box('${Constants.chatMessagesBox}$chatId');
+
+    final newData = messageBox.keys.map((e) {
+      final message = messageBox.get(e);
+      final messageData = Message.fromMap(Map<String, dynamic>.from(message));
+      return messageData;
+    }).toList();
+    notifyListeners();
+    return newData;
+  }
+
+  // Set File List
+  void setImagesFileList({required List<XFile> listValue}) {
+    _imagesFileList = listValue;
+    notifyListeners();
+  }
+
+  // Set the Current Model
+  String setCurrentModel({required String newModel}) {
+    _modelType = newModel;
+    notifyListeners();
+    return newModel;
+  }
+
+  // Function to set the model based on bool -isTextOnly
+  Future<void> setModel({required bool isTextOnly}) async {
+    if (isTextOnly) {
+      _model = _textModel ??
+          GenerativeModel(
+            model: setCurrentModel(newModel: 'gemini-pro'),
+            apiKey: ApiService.apiKey,
+          );
+    } else {
+      _model = _visionModel ??
+          GenerativeModel(
+            model: setCurrentModel(newModel: 'gemini-pro-vision'),
+            apiKey: ApiService.apiKey,
+          );
+    }
+    notifyListeners();
+  }
+
+  // Set current Page index
+  void setCurrentIndex({required int newIndex}) {
+    _currentIndex = newIndex;
+    notifyListeners();
+  }
+
+  // Set current chatId
+  void setCurrentChatId({required String newChatId}) {
+    _currentChatId = newChatId;
+    notifyListeners();
+  }
+
+  // Set Loading 
+  void setLoading({required bool value}) {
+    _isLoading = value;
+    notifyListeners();
+  }
+
+
+
+  // Send Message to gemini and get the streamed response
+  
 
   // Init Hive Box
   static initHive() async {
