@@ -44,30 +44,31 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       bottomNavigationBar: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          elevation: 0,
-          selectedItemColor: Theme.of(context).colorScheme.primary,
-          onTap: (index) {
-            setState(() {
-              _currentIndex = index;
-            });
-            _pageController.jumpToPage(index);
-          },
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.history),
-              // icon: Icon(CupertinoIcons.timelapse),
-              label: 'Chat History',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(CupertinoIcons.chat_bubble),
-              label: 'Chat',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(CupertinoIcons.person),
-              label: 'Profile',
-            ),
-          ]),
+        currentIndex: _currentIndex,
+        elevation: 0,
+        selectedItemColor: Theme.of(context).colorScheme.primary,
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+          _pageController.jumpToPage(index);
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.history),
+            // icon: Icon(CupertinoIcons.timelapse),
+            label: 'Chat History',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(CupertinoIcons.chat_bubble),
+            label: 'Chat',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(CupertinoIcons.person),
+            label: 'Profile',
+          ),
+        ],
+      ),
     );
   }
 }
