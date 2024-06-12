@@ -1,7 +1,7 @@
 import 'dart:developer';
 
 import 'package:chatbotapp/providers/chat_provider.dart';
-import 'package:chatbotapp/utility/utlities.dart';
+import 'package:chatbotapp/utility/utilities.dart';
 import 'package:chatbotapp/widgets/preview_images_widget.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
