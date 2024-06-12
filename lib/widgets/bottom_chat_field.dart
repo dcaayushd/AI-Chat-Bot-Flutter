@@ -1,8 +1,11 @@
 import 'dart:developer';
 
 import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/utility/utlities.dart';
+import 'package:chatbotapp/widgets/preview_images_widget.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 class BottomChatField extends StatefulWidget {
   const BottomChatField({
@@ -22,6 +25,9 @@ class _BottomChatFieldState extends State<BottomChatField> {
 
   // Focus Node for the input field
   final FocusNode textFieldFocus = FocusNode();
+
+  // Initialize image picker
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void dispose() {
@@ -44,12 +50,30 @@ class _BottomChatFieldState extends State<BottomChatField> {
       log('error : $e');
     } finally {
       textController.clear();
+      widget.chatProvider.setImagesFileList(listValue: []);
       textFieldFocus.unfocus();
+    }
+  }
+
+  // Pick an image
+  void pickImage() async {
+    try {
+      final pickedImages = await _picker.pickMultiImage(
+        maxHeight: 800,
+        maxWidth: 800,
+        imageQuality: 95,
+      );
+      widget.chatProvider.setImagesFileList(listValue: pickedImages);
+    } catch (e) {
+      log('error: $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    bool hasImages = widget.chatProvider.imagesFileList != null &&
+        widget.chatProvider.imagesFileList!.isNotEmpty;
+
     return Container(
       decoration: BoxDecoration(
           color: Theme.of(context).cardColor,
@@ -66,74 +90,96 @@ class _BottomChatFieldState extends State<BottomChatField> {
           //   ),
           // ],
           ),
-      child: Row(
+      child: Column(
         children: [
-          IconButton(
-            onPressed: () {
-              // ! Pick an Image
-            },
-            icon: const Icon(CupertinoIcons.photo),
-          ),
-          const SizedBox(width: 5),
-          Expanded(
-            child: TextField(
-              focusNode: textFieldFocus,
-              controller: textController,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (String value) {
-                if (value.isNotEmpty) {
-                // Send the Message
-                sendChatMessage(
-                  message: textController.text,
-                  chatProvider: widget.chatProvider,
-                  isTextOnly: true,
-                );
-              }
-              },
-              decoration: InputDecoration.collapsed(
-                hintText: 'Enter a prompt...',
-                border: OutlineInputBorder(
-                  borderSide: BorderSide.none,
-                  borderRadius: BorderRadius.circular(30),
+          if (hasImages) const PreviewImagesWidget(),
+          Row(
+            children: [
+              IconButton(
+                onPressed: () {
+                  // ! Pick an Image
+                  if (hasImages) {
+                    // Show the delete dialog
+                    showMyAnimatedDialog(
+                      context: context,
+                      title: 'Delete Images',
+                      content: 'Are you sure you want to delete the images?',
+                      actionText: 'Delete',
+                      onActionPressed: (value) {
+                        if (value) {
+                          widget.chatProvider.setImagesFileList(listValue: []);
+                        }
+                      },
+                    );
+                  } else {
+                    pickImage();
+                  }
+                },
+                icon: Icon(
+                    hasImages ? CupertinoIcons.delete : CupertinoIcons.photo),
+              ),
+              const SizedBox(width: 5),
+              Expanded(
+                child: TextField(
+                  focusNode: textFieldFocus,
+                  controller: textController,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (String value) {
+                    if (value.isNotEmpty) {
+                      // Send the Message
+                      sendChatMessage(
+                        message: textController.text,
+                        chatProvider: widget.chatProvider,
+                        isTextOnly: hasImages ? false : true,
+                      );
+                    }
+                  },
+                  decoration: InputDecoration.collapsed(
+                    hintText: 'Enter a prompt...',
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide.none,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
 
-          // IconButton(
-          //   onPressed: () {
-          //     // chatProvider.sendMessage();
-          //   },
-          //   icon: const Icon(CupertinoIcons.paperplane),
-          // ),
+              // IconButton(
+              //   onPressed: () {
+              //     // chatProvider.sendMessage();
+              //   },
+              //   icon: const Icon(CupertinoIcons.paperplane),
+              // ),
 
-          GestureDetector(
-            onTap: () {
-              if (textController.text.isNotEmpty) {
-                // Send the Message
-                sendChatMessage(
-                  message: textController.text,
-                  chatProvider: widget.chatProvider,
-                  isTextOnly: true,
-                );
-              }
-            },
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.deepPurple,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              margin: const EdgeInsets.all(5.0),
-              child: const Padding(
-                padding: EdgeInsets.all(8.0),
-                child: Icon(
-                  // CupertinoIcons.paperplane,
-                  CupertinoIcons.up_arrow,
-                  color: Colors.white,
+              GestureDetector(
+                onTap: () {
+                  if (textController.text.isNotEmpty) {
+                    // Send the Message
+                    sendChatMessage(
+                      message: textController.text,
+                      chatProvider: widget.chatProvider,
+                      isTextOnly: hasImages ? false : true,
+                    );
+                  }
+                },
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.deepPurple,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  margin: const EdgeInsets.all(5.0),
+                  child: const Padding(
+                    padding: EdgeInsets.all(8.0),
+                    child: Icon(
+                      // CupertinoIcons.paperplane,
+                      CupertinoIcons.up_arrow,
+                      color: Colors.white,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          )
+            ],
+          ),
         ],
       ),
     );

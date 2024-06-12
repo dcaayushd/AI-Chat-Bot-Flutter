@@ -74,26 +74,6 @@ class _ChatScreenState extends State<ChatScreen> {
                             chatProvider: chatProvider,
                           ),
                   ),
-
-                  // ? //  Input Field
-                  // Row(
-                  //   children: [
-                  //     Expanded(
-                  //       child: TextField(
-                  //         controller: _messageController,
-                  //         decoration: const InputDecoration(
-                  //           hintText: 'Type a message',
-                  //         ),
-                  //       ),
-                  //     ),
-                  //     IconButton(
-                  //         onPressed: () {
-                  //           // chatProvider.sendMessage();
-                  //         },
-                  //         icon: const Icon(CupertinoIcons.paperplane))
-                  //   ],
-                  // ),
-
                   BottomChatField(chatProvider: chatProvider),
                 ],
               ),

@@ -26,9 +26,6 @@ class ChatMessages extends StatelessWidget {
         return message.role.name == Role.user.name
             ? MyMessageWidget(message: message)
             : AssistantMessageWidget(message: message.message.toString());
-        // ListTile(
-        //   title: Text(message.message.toString()),
-        // );
       },
     );
   }
