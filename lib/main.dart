@@ -1,33 +1,50 @@
-// import 'package:chatbotapp/apis/api_service.dart';
-import 'package:chatbotapp/providers/chat_provider.dart';
-import 'package:chatbotapp/screens/home_screen.dart';
 import 'package:flutter/material.dart';
-// import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:chatbotapp/themes/my_theme.dart';
+import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/providers/settings_provider.dart';
+import 'package:chatbotapp/screens/home_screen.dart';
 import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // await dotenv.load(fileName: ".env");
+
   await ChatProvider.initHive();
-  runApp(MultiProvider(providers: [
-    ChangeNotifierProvider(
-      create: (context) => ChatProvider(),
-    )
-  ], child: const MyApp()));
+
+  runApp(MultiProvider(
+    providers: [
+      ChangeNotifierProvider(create: (context) => ChatProvider()),
+      ChangeNotifierProvider(create: (context) => SettingsProvider()),
+    ],
+    child: const MyApp(),
+  ));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  @override
+  void initState() {
+    setTheme();
+    super.initState();
+  }
+
+  void setTheme() {
+    final settingsProvider = context.read<SettingsProvider>();
+    settingsProvider.getSavedSettings();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
       title: 'Flutter Chat Bot App',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
+      theme:
+          context.watch<SettingsProvider>().isDarkMode ? darkTheme : lightTheme,
+      debugShowCheckedModeBanner: false,
       home: const HomeScreen(),
     );
   }
