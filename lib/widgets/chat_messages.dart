@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-
-import '../models/message.dart';
-import '../providers/chat_provider.dart';
-
-import '../widgets/assistant_message_widget.dart';
-import '../widgets/my_message_widget.dart';
+import 'package:chatbotapp/models/message.dart';
+import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/widgets/assistant_message_widget.dart';
+import 'package:chatbotapp/widgets/my_message_widget.dart';
 
 class ChatMessages extends StatelessWidget {
   const ChatMessages({
@@ -22,6 +20,7 @@ class ChatMessages extends StatelessWidget {
       controller: scrollController,
       itemCount: chatProvider.inChatMessages.length,
       itemBuilder: (context, index) {
+        // compare with timeSent before showing the list
         final message = chatProvider.inChatMessages[index];
         return message.role.name == Role.user.name
             ? MyMessageWidget(message: message)
