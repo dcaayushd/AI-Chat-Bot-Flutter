@@ -6,7 +6,7 @@ class Message {
   List<String> imagesUrls;
   DateTime timeSent;
 
-  //Constructor
+  // constructor
   Message({
     required this.messageId,
     required this.chatId,
@@ -16,31 +16,31 @@ class Message {
     required this.timeSent,
   });
 
-  //To Map
+  // toMap
   Map<String, dynamic> toMap() {
-    return <String, dynamic>{
+    return {
       'messageId': messageId,
       'chatId': chatId,
       'role': role.index,
       'message': message.toString(),
-      'imageUrls': imagesUrls,
+      'imagesUrls': imagesUrls,
       'timeSent': timeSent.toIso8601String(),
     };
   }
 
-  // From Map
+  // from map
   factory Message.fromMap(Map<String, dynamic> map) {
     return Message(
       messageId: map['messageId'],
       chatId: map['chatId'],
-      role: Role.values[map['roles']],
+      role: Role.values[map['role']],
       message: StringBuffer(map['message']),
-      imagesUrls: List<String>.from(map['imageUrls']),
+      imagesUrls: List<String>.from(map['imagesUrls']),
       timeSent: DateTime.parse(map['timeSent']),
     );
   }
 
-  // Copy With
+  // copyWith
   Message copyWith({
     String? messageId,
     String? chatId,
