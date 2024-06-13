@@ -1,8 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
-import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 class PreviewImagesWidget extends StatelessWidget {
@@ -19,14 +19,9 @@ class PreviewImagesWidget extends StatelessWidget {
       builder: (context, chatProvider, child) {
         final messageToShow =
             message != null ? message!.imagesUrls : chatProvider.imagesFileList;
-
         final padding = message != null
             ? EdgeInsets.zero
-            : const EdgeInsets.only(
-                left: 8.0,
-                right: 8.0,
-              );
-
+            : const EdgeInsets.only(left: 8.0, right: 8.0);
         return Padding(
           padding: padding,
           child: SizedBox(
@@ -36,7 +31,12 @@ class PreviewImagesWidget extends StatelessWidget {
               itemCount: messageToShow!.length,
               itemBuilder: (context, index) {
                 return Padding(
-                  padding: const EdgeInsets.fromLTRB(4.0, 8.0, 4.0, 0.0),
+                  padding: const EdgeInsets.fromLTRB(
+                    4.0,
+                    8.0,
+                    4.0,
+                    0.0,
+                  ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(20.0),
                     child: Image.file(
