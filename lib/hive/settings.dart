@@ -1,4 +1,3 @@
-// import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 part 'settings.g.dart';
@@ -11,7 +10,7 @@ class Settings extends HiveObject {
   @HiveField(1)
   bool shouldSpeak = false;
 
-  //Constructor
+  // constructor
   Settings({
     required this.isDarkTheme,
     required this.shouldSpeak,

@@ -21,7 +21,7 @@ class ChatHistoryAdapter extends TypeAdapter<ChatHistory> {
       prompt: fields[1] as String,
       response: fields[2] as String,
       imagesUrls: (fields[3] as List).cast<String>(),
-      timeStamp: fields[4] as DateTime,
+      timestamp: fields[4] as DateTime,
     );
   }
 
@@ -38,7 +38,7 @@ class ChatHistoryAdapter extends TypeAdapter<ChatHistory> {
       ..writeByte(3)
       ..write(obj.imagesUrls)
       ..writeByte(4)
-      ..write(obj.timeStamp);
+      ..write(obj.timestamp);
   }
 
   @override

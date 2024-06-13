@@ -1,4 +1,3 @@
-// import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 part 'chat_history.g.dart';
@@ -18,15 +17,14 @@ class ChatHistory extends HiveObject {
   final List<String> imagesUrls;
 
   @HiveField(4)
-  final DateTime timeStamp;
+  final DateTime timestamp;
 
-  //Constructor
-
+  // constructor
   ChatHistory({
     required this.chatId,
     required this.prompt,
     required this.response,
     required this.imagesUrls,
-    required this.timeStamp,
+    required this.timestamp,
   });
 }
