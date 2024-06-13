@@ -1,6 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/widgets/preview_images_widget.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 class MyMessageWidget extends StatelessWidget {
@@ -8,6 +8,7 @@ class MyMessageWidget extends StatelessWidget {
     super.key,
     required this.message,
   });
+
   final Message message;
 
   @override
@@ -27,7 +28,9 @@ class MyMessageWidget extends StatelessWidget {
         child: Column(
           children: [
             if (message.imagesUrls.isNotEmpty)
-              PreviewImagesWidget(message: message),
+              PreviewImagesWidget(
+                message: message,
+              ),
             MarkdownBody(
               selectable: true,
               data: message.message.toString(),
