@@ -2,6 +2,10 @@
 
 This is a Flutter application that provides a conversational interface with an AI chatbot named Gemini. Users can interact with Gemini in real-time, view past messages, and send new messages.
 
+## Demo
+
+[demo](assets/screenshots/app_demo.png)
+
 ## Features
 
 - **Chat Interface**: Engage in interactive two-way communication with the AI chatbot.
@@ -28,7 +32,8 @@ This is a Flutter application that provides a conversational interface with an A
 
 1. **Prerequisites**: Ensure you have Flutter and Dart installed on your development machine. You can follow the official installation guide at [Flutter Get Started](https://docs.flutter.dev/get-started/install).
 2. **Clone or Download the Project**: Obtain the project code, either by cloning the Git repository or downloading the source files.
-3. **Run the App**: Navigate to the project directory in your terminal and execute `flutter run`.
+3. **Get Your Gemini API** [Go to google AI for Developers](https://ai.google.dev/) and get your Api Key
+4. **Run the App**: Navigate to the project directory in your terminal and execute `flutter run`.
 
 ## Usage
 
@@ -44,7 +49,7 @@ We encourage contributions to this project! If you have improvements or suggesti
 
 ## License
 
-This project is likely licensed under the MIT License [check the LICENSE file for details](LICENSE).
+This project is licensed under the MIT License [check the LICENSE file for details](LICENSE).
 
 ## Author
 
