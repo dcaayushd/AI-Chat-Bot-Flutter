@@ -1,10 +1,10 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/utility/animated_dialog.dart';
+import 'package:chatbotapp/widgets/bottom_chat_field.dart';
+import 'package:chatbotapp/widgets/chat_messages.dart';
 import 'package:provider/provider.dart';
-
-import '../providers/chat_provider.dart';
-
-import '../widgets/chat_messages.dart';
-import '../widgets/bottom_chat_field.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -14,7 +14,7 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  // Scroll Controller
+  // scroll controller
   final ScrollController _scrollController = ScrollController();
 
   @override
@@ -24,7 +24,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToBottom() {
-    WidgetsBinding.instance!.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients &&
           _scrollController.position.maxScrollExtent > 0.0) {
         _scrollController.animateTo(
@@ -44,20 +44,45 @@ class _ChatScreenState extends State<ChatScreen> {
           _scrollToBottom();
         }
 
-        // Auto Scroll to bottom on New Message
-        chatProvider.addListener(
-          () {
-            if (chatProvider.inChatMessages.isNotEmpty) {
-              _scrollToBottom();
-            }
-          },
-        );
+        // auto scroll to bottom on new message
+        chatProvider.addListener(() {
+          if (chatProvider.inChatMessages.isNotEmpty) {
+            _scrollToBottom();
+          }
+        });
 
         return Scaffold(
           appBar: AppBar(
             backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
             centerTitle: true,
             title: const Text('Chat with Gemini'),
+            actions: [
+              if (chatProvider.inChatMessages.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: CircleAvatar(
+                    child: IconButton(
+                      icon: const Icon(CupertinoIcons.add),
+                      onPressed: () async {
+                        // show my animated dialog to start new chat
+                        showMyAnimatedDialog(
+                          context: context,
+                          title: 'Start New Chat',
+                          content: 'Are you sure you want to start a new chat?',
+                          actionText: 'Yes',
+                          onActionPressed: (value) async {
+                            if (value) {
+                              // prepare chat room
+                              await chatProvider.prepareChatRoom(
+                                  isNewChat: true, chatID: '');
+                            }
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                )
+            ],
           ),
           body: SafeArea(
             child: Padding(
@@ -67,14 +92,18 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: chatProvider.inChatMessages.isEmpty
                         ? const Center(
-                            child: Text('No Messages Yet'),
+                            child: Text('No messages yet'),
                           )
                         : ChatMessages(
                             scrollController: _scrollController,
                             chatProvider: chatProvider,
                           ),
                   ),
-                  BottomChatField(chatProvider: chatProvider),
+
+                  // input field
+                  BottomChatField(
+                    chatProvider: chatProvider,
+                  )
                 ],
               ),
             ),
