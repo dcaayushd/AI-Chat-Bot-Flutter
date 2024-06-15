@@ -1,11 +1,13 @@
 import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/utility/utilities.dart';
+import 'package:chatbotapp/widgets/preview_images_widget.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 class BottomChatField extends StatefulWidget {
-  const BottomChatField({super.key, required this.chatProvider,});
+  const BottomChatField({super.key, required this.chatProvider});
 
-final ChatProvider chatProvider;
+  final ChatProvider chatProvider;
 
   @override
   State<BottomChatField> createState() => _BottomChatFieldState();
@@ -29,20 +31,20 @@ class _BottomChatFieldState extends State<BottomChatField> {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-          color: Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(
-            color: Theme.of(context).textTheme.titleLarge!.color!,
-          )
-          // boxShadow: [
-          //   BoxShadow(
-          //     color: Colors.grey.withOpacity(0.5),
-          //     spreadRadius: 5,
-          //     blurRadius: 7,
-          //     offset: const Offset(0, 3),
-          //   ),
-          // ],
-          ),
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(
+          color: Theme.of(context).textTheme.titleLarge!.color!,
+        ),
+        // boxShadow: [
+        //   BoxShadow(
+        //     color: Colors.grey.withOpacity(0.5),
+        //     spreadRadius: 5,
+        //     blurRadius: 7,
+        //     offset: const Offset(0, 3),
+        //   ),
+        // ],
+      ),
       child: Row(
         children: [
           IconButton(
@@ -74,9 +76,8 @@ class _BottomChatFieldState extends State<BottomChatField> {
           //   },
           //   icon: const Icon(CupertinoIcons.paperplane),
           // ),
-
           GestureDetector(
-            onTap: (){
+            onTap: () {
               // Send the Message
             },
             child: Container(
@@ -94,7 +95,7 @@ class _BottomChatFieldState extends State<BottomChatField> {
                 ),
               ),
             ),
-          )
+          ),
         ],
       ),
     );
