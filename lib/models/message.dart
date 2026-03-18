@@ -3,50 +3,50 @@ class Message {
   String chatId;
   Role role;
   StringBuffer message;
-  List<String> imageUrls;
+  List<String> imagesUrls;
   DateTime timeSent;
 
-  //Constructor
+  // constructor
   Message({
     required this.messageId,
     required this.chatId,
     required this.role,
     required this.message,
-    required this.imageUrls,
+    required this.imagesUrls,
     required this.timeSent,
   });
 
-  //To Map
+  // toMap
   Map<String, dynamic> toMap() {
-    return <String, dynamic>{
+    return {
       'messageId': messageId,
       'chatId': chatId,
       'role': role.index,
       'message': message.toString(),
-      'imageUrls': imageUrls,
+      'imagesUrls': imagesUrls,
       'timeSent': timeSent.toIso8601String(),
     };
   }
 
-  // From Map
+  // from map
   factory Message.fromMap(Map<String, dynamic> map) {
     return Message(
       messageId: map['messageId'],
       chatId: map['chatId'],
-      role: Role.values[map['roles']],
+      role: Role.values[map['role']],
       message: StringBuffer(map['message']),
-      imageUrls: List<String>.from(map['imageUrls']),
+      imagesUrls: List<String>.from(map['imagesUrls']),
       timeSent: DateTime.parse(map['timeSent']),
     );
   }
 
-  // Copy With
+  // copyWith
   Message copyWith({
     String? messageId,
     String? chatId,
     Role? role,
     StringBuffer? message,
-    List<String>? imageUrls,
+    List<String>? imagesUrls,
     DateTime? timeSent,
   }) {
     return Message(
@@ -54,7 +54,7 @@ class Message {
       chatId: chatId ?? this.chatId,
       role: role ?? this.role,
       message: message ?? this.message,
-      imageUrls: imageUrls ?? this.imageUrls,
+      imagesUrls: imagesUrls ?? this.imagesUrls,
       timeSent: timeSent ?? this.timeSent,
     );
   }
