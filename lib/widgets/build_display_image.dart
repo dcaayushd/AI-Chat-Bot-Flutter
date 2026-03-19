@@ -1,6 +1,7 @@
 import 'dart:io';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:chatbotapp/utility/assets_manager.dart';
+import 'package:chatbotapp/utilities/assets_manager.dart';
 
 class BuildDisplayImage extends StatelessWidget {
   const BuildDisplayImage({
@@ -8,32 +9,50 @@ class BuildDisplayImage extends StatelessWidget {
     required this.file,
     required this.userImage,
     required this.onPressed,
+    this.radius = 44,
   });
 
   final File? file;
   final String userImage;
   final VoidCallback onPressed;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Stack(
+      clipBehavior: Clip.none,
       children: [
-        CircleAvatar(
-          radius: 60.0,
-          backgroundColor: Colors.grey[200],
-          backgroundImage: getImageToShow(),
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              colors: [
+                colorScheme.primary,
+                colorScheme.secondary,
+              ],
+            ),
+          ),
+          child: CircleAvatar(
+            radius: radius,
+            backgroundColor: colorScheme.surfaceContainerHighest,
+            backgroundImage: getImageToShow(),
+          ),
         ),
         Positioned(
-          bottom: 0.0,
-          right: 0.0,
+          bottom: -4,
+          right: -4,
           child: InkWell(
             onTap: onPressed,
-            child: const CircleAvatar(
-              backgroundColor: Colors.blue,
-              radius: 20.0,
+            child: CircleAvatar(
+              backgroundColor: colorScheme.primaryContainer,
+              radius: 18,
               child: Icon(
-                Icons.camera_alt,
-                color: Colors.white,
+                CupertinoIcons.camera_fill,
+                size: 18,
+                color: colorScheme.onPrimaryContainer,
               ),
             ),
           ),
@@ -42,13 +61,19 @@ class BuildDisplayImage extends StatelessWidget {
     );
   }
 
-  getImageToShow() {
+  ImageProvider<Object> getImageToShow() {
     if (file != null) {
-      return FileImage(File(file!.path)) as ImageProvider<Object>;
-    } else if (userImage.isNotEmpty) {
-      return FileImage(File(userImage)) as ImageProvider<Object>;
-    } else {
-      return const AssetImage(AssetsMenager.userIcon);
+      return FileImage(File(file!.path));
     }
+
+    final normalizedPath = userImage.trim();
+    if (normalizedPath.isNotEmpty) {
+      final savedFile = File(normalizedPath);
+      if (savedFile.existsSync()) {
+        return FileImage(savedFile);
+      }
+    }
+
+    return const AssetImage(AssetsMenager.userIcon);
   }
 }

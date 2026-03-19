@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Chatbotapp</string>
+	<string>AI Chatbot</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>chatbotapp</string>
+	<string>AI Chatbot</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,11 +27,13 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>This is required to access your Camera</string>
+	<string>Allow camera access for image prompts.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>This is required to access your Microphone for Voice Inputs</string>
+	<string>Allow microphone access for voice input.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>This is required to access your Photos</string>
+	<string>Allow photo access for image prompts.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Allow speech recognition for voice input.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

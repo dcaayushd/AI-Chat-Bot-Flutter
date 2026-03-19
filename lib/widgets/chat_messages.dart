@@ -9,22 +9,26 @@ class ChatMessages extends StatelessWidget {
     super.key,
     required this.scrollController,
     required this.chatProvider,
+    this.bottomPadding = 24,
   });
 
   final ScrollController scrollController;
   final ChatProvider chatProvider;
+  final double bottomPadding;
 
   @override
   Widget build(BuildContext context) {
-    return ListView.builder(
+    return ListView.separated(
       controller: scrollController,
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: EdgeInsets.only(top: 8, bottom: bottomPadding),
       itemCount: chatProvider.inChatMessages.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 2),
       itemBuilder: (context, index) {
-        // compare with timeSent before showing the list
         final message = chatProvider.inChatMessages[index];
         return message.role.name == Role.user.name
             ? MyMessageWidget(message: message)
-            : AssistantMessageWidget(message: message.message.toString());
+            : AssistantMessageWidget(message: message);
       },
     );
   }

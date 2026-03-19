@@ -1,11 +1,11 @@
 {
-    "name": "chatbotapp",
-    "short_name": "chatbotapp",
+    "name": "AI Chatbot",
+    "short_name": "AI Chatbot",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F4EEE6",
+    "theme_color": "#1D6B67",
+    "description": "Fast Gemini chat.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

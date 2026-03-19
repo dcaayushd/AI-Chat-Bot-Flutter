@@ -32,4 +32,24 @@ class ApiService {
       'Missing Gemini API key. Replace API_KEY in .env or run with --dart-define=API_KEY=your_key.',
     );
   }
+
+  static bool get isConfigured {
+    final dartDefineApiKey = _dartDefineApiKey.trim();
+    if (dartDefineApiKey.isNotEmpty && dartDefineApiKey != _placeholderApiKey) {
+      return true;
+    }
+
+    if (!dotenv.isInitialized) {
+      return false;
+    }
+
+    for (final envName in _apiKeyEnvNames) {
+      final value = dotenv.env[envName]?.trim();
+      if (value != null && value.isNotEmpty && value != _placeholderApiKey) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 }

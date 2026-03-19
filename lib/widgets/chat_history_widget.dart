@@ -1,9 +1,16 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
-import 'package:chatbotapp/utility/animated_dialog.dart';
+import 'package:chatbotapp/utilities/animated_dialog.dart';
+import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:provider/provider.dart';
+
+enum _HistoryAction {
+  copyPrompt,
+  deleteChat,
+}
 
 class ChatHistoryWidget extends StatelessWidget {
   const ChatHistoryWidget({
@@ -15,54 +22,143 @@ class ChatHistoryWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Card(
-      child: ListTile(
-        contentPadding: const EdgeInsets.only(left: 10.0, right: 10.0),
-        leading: const CircleAvatar(
-          radius: 30,
-          child: Icon(CupertinoIcons.chat_bubble_2),
-        ),
-        title: Text(
-          chat.prompt,
-          maxLines: 1,
-        ),
-        subtitle: Text(
-          chat.response,
-          maxLines: 2,
-        ),
-        trailing: const Icon(Icons.arrow_forward_ios),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
         onTap: () async {
-          // navigate to chat screen
           final chatProvider = context.read<ChatProvider>();
-          // prepare chat room
           await chatProvider.prepareChatRoom(
             isNewChat: false,
             chatID: chat.chatId,
           );
-          chatProvider.setCurrentIndex(newIndex: 1);
-          chatProvider.pageController.jumpToPage(1);
+          if (context.mounted) {
+            Navigator.of(context).pop();
+          }
         },
-        onLongPress: () {
-          // show my animated dialog to delete the chat
-          showMyAnimatedDialog(
-            context: context,
-            title: 'Delete Chat',
-            content: 'Are you sure you want to delete this chat?',
-            actionText: 'Delete',
-            onActionPressed: (value) async {
-              if (value) {
-                // delete the chat
-                await context
-                    .read<ChatProvider>()
-                    .deleteChatMessages(chatId: chat.chatId);
-
-                // delete the chat history
-                await chat.delete();
-              }
-            },
-          );
-        },
+        onLongPress: () => _confirmDelete(context),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: chat.imagesUrls.isEmpty
+                      ? (isDark
+                          ? colorScheme.primaryContainer.withValues(alpha: 0.78)
+                          : colorScheme.primaryContainer)
+                      : colorScheme.primaryContainer.withValues(alpha: 0.78),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                alignment: Alignment.center,
+                child: Icon(
+                  chat.imagesUrls.isEmpty
+                      ? CupertinoIcons.chat_bubble_2
+                      : CupertinoIcons.photo_on_rectangle,
+                  size: 17,
+                  color: chat.imagesUrls.isEmpty
+                      ? colorScheme.onPrimaryContainer
+                      : colorScheme.onSecondaryContainer,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chat.prompt,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      chat.response,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                    if (chat.imagesUrls.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        '${chat.imagesUrls.length} image${chat.imagesUrls.length == 1 ? '' : 's'}',
+                        style:
+                            Theme.of(context).textTheme.labelMedium?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: () => _showActions(context),
+                child: Icon(
+                  CupertinoIcons.ellipsis_circle,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  Future<void> _showActions(BuildContext context) async {
+    final action = await showAdaptiveActionSheet<_HistoryAction>(
+      context: context,
+      title: chat.prompt,
+      actions: const [
+        AdaptiveSheetAction(
+          label: 'Copy prompt',
+          value: _HistoryAction.copyPrompt,
+        ),
+        AdaptiveSheetAction(
+          label: 'Delete chat',
+          value: _HistoryAction.deleteChat,
+          isDestructive: true,
+        ),
+      ],
+    );
+
+    if (action == _HistoryAction.copyPrompt) {
+      await Clipboard.setData(ClipboardData(text: chat.prompt));
+      if (context.mounted) {
+        showAppSnackBar(context, 'Prompt copied');
+      }
+      return;
+    }
+
+    if (action == _HistoryAction.deleteChat && context.mounted) {
+      await _confirmDelete(context);
+    }
+  }
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final chatProvider = context.read<ChatProvider>();
+
+    final confirmed = await showAnimatedConfirmationDialog(
+      context: context,
+      title: 'Delete chat',
+      content: 'Remove this chat?',
+      actionText: 'Delete',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    await chatProvider.deleteChatMessages(chatId: chat.chatId);
+    await chat.delete();
   }
 }
