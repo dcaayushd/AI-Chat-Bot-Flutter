@@ -1,6 +1,6 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/cupertino.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/widgets/chat/assistant_response_content.dart';

@@ -5,7 +5,7 @@ import 'package:chatbotapp/providers/user_profile_provider.dart';
 import 'package:chatbotapp/providers/voice_input_provider.dart';
 import 'package:chatbotapp/screens/chat_screen.dart';
 import 'package:provider/provider.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   testWidgets('Chat screen renders empty state', (WidgetTester tester) async {

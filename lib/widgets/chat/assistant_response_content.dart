@@ -1,5 +1,5 @@
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -77,7 +77,44 @@ class AssistantResponseContent extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return MarkdownStyleSheet.fromTheme(theme).copyWith(
+    return MarkdownStyleSheet(
+      pPadding: EdgeInsets.zero,
+      h1: theme.textTheme.headlineSmall,
+      h1Padding: EdgeInsets.zero,
+      h2: theme.textTheme.titleLarge,
+      h2Padding: EdgeInsets.zero,
+      h3: theme.textTheme.titleMedium,
+      h3Padding: EdgeInsets.zero,
+      h4: theme.textTheme.bodyLarge,
+      h4Padding: EdgeInsets.zero,
+      h5: theme.textTheme.bodyLarge,
+      h5Padding: EdgeInsets.zero,
+      h6: theme.textTheme.bodyLarge,
+      h6Padding: EdgeInsets.zero,
+      em: const TextStyle(fontStyle: FontStyle.italic),
+      strong: const TextStyle(fontWeight: FontWeight.bold),
+      del: const TextStyle(decoration: TextDecoration.lineThrough),
+      blockquote: theme.textTheme.bodyMedium,
+      img: theme.textTheme.bodyMedium,
+      checkbox: theme.textTheme.bodyMedium?.copyWith(
+        color: theme.primaryColor,
+      ),
+      listIndent: 24,
+      listBulletPadding: const EdgeInsets.only(right: 4),
+      tableHead: const TextStyle(fontWeight: FontWeight.w600),
+      tableBody: theme.textTheme.bodyMedium,
+      tableHeadAlign: TextAlign.center,
+      tablePadding: const EdgeInsets.only(bottom: 4),
+      tableBorder: TableBorder.all(color: theme.dividerColor),
+      tableColumnWidth: const FlexColumnWidth(),
+      tableCellsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      tableCellsDecoration: const BoxDecoration(),
+      blockquotePadding: const EdgeInsets.all(8),
+      horizontalRuleDecoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(width: 5, color: theme.dividerColor),
+        ),
+      ),
       p: theme.textTheme.bodyLarge?.copyWith(height: 1.48),
       listBullet: theme.textTheme.bodyLarge,
       blockquoteDecoration: BoxDecoration(

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/widgets/preview_images_widget.dart';
@@ -60,8 +60,7 @@ class MyMessageWidget extends StatelessWidget {
               MarkdownBody(
                 selectable: true,
                 data: message.message.toString(),
-                styleSheet:
-                    MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                styleSheet: MarkdownStyleSheet(
                   p: Theme.of(context).textTheme.bodyLarge?.copyWith(
                         color: textColor,
                       ),

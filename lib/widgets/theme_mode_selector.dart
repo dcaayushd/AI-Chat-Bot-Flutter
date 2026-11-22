@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/utilities/app_motion.dart';
 

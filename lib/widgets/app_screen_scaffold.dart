@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/widgets/app_gradient_background.dart';
 
 double homeIndicatorSpacing(

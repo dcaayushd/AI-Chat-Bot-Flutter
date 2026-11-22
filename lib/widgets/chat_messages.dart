@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/widgets/assistant_message_widget.dart';
