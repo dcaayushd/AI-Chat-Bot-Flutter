@@ -7,15 +7,20 @@ import 'package:chatbotapp/hive/legacy_chat_storage_stub.dart'
     if (dart.library.io) 'package:chatbotapp/hive/legacy_chat_storage_io.dart';
 import 'package:chatbotapp/hive/settings.dart';
 import 'package:chatbotapp/hive/user_model.dart';
+import 'package:chatbotapp/models/chat_attachment.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
+import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path/path.dart' as p;
+import 'package:uuid/uuid.dart';
 
 class ChatRepository {
-  static const _imagePrefix = 'attachment:';
+  static const _attachmentPrefix = 'attachment:';
+  static const _uuid = Uuid();
 
   static Future<void> initialize() async {
     await Hive.initFlutter(Constants.geminiDB);
@@ -32,15 +37,15 @@ class ChatRepository {
     ]);
   }
 
-  LazyBox<Map> get _images => Hive.lazyBox<Map>(Constants.chatImagesBox);
+  LazyBox<Map> get _attachments => Hive.lazyBox<Map>(Constants.chatImagesBox);
 
   String? get _storageDirectory {
     final file = Boxes.getChatHistory().path;
     return file == null ? null : p.dirname(file);
   }
 
-  String imageKey(String chatId, String imageId) =>
-      '$_imagePrefix$chatId:$imageId';
+  String attachmentKey(String chatId, String id) =>
+      '$_attachmentPrefix$chatId:$id';
 
   ChatHistory? getChat(String chatId) => Boxes.getChatHistory().get(chatId);
 
@@ -59,16 +64,21 @@ class ChatRepository {
   List<Message> _decodeMessages(Iterable<dynamic> stored) =>
       stored.whereType<Map>().map(Message.tryFromMap).nonNulls.toList();
 
-  Future<ChatImage?> loadImage(String chatId, String reference) async {
+  Future<ChatAttachment?> loadAttachment(
+    String chatId,
+    String reference,
+  ) async {
     try {
-      if (reference.startsWith(_imagePrefix)) {
-        if (!reference.startsWith(imageKey(chatId, ''))) return null;
-        final record = await _images.get(reference);
+      if (reference.startsWith(_attachmentPrefix)) {
+        if (!reference.startsWith(attachmentKey(chatId, ''))) return null;
+        final record = await _attachments.get(reference);
         if (record case {
           'name': final String name,
           'bytes': final Uint8List bytes,
         }) {
-          return ChatImage.fromBytes(name, bytes);
+          return record['kind'] == 'document'
+              ? ChatDocument.fromBytes(name, bytes)
+              : ChatImage.fromBytes(name, bytes);
         }
         return null;
       }
@@ -85,21 +95,28 @@ class ChatRepository {
     }
   }
 
+  Future<ChatImage?> loadImage(String chatId, String reference) async {
+    final attachment = await loadAttachment(chatId, reference);
+    return attachment is ChatImage ? attachment : null;
+  }
+
   Future<void> save({
     required String chatId,
     required List<Message> messages,
     required ChatMode mode,
-    required Map<String, ChatImage> newImages,
+    required ChatOptions options,
+    required Map<String, ChatAttachment> newAttachments,
+    String? title,
   }) async {
-    final imageMaps = newImages.map(
-      (key, image) => MapEntry(key, image.toMap()),
+    final attachmentMaps = newAttachments.map(
+      (key, attachment) => MapEntry(key, attachment.toMap()),
     );
-    final newKeys = imageMaps.keys
-        .where((key) => !_images.containsKey(key))
+    final newKeys = attachmentMaps.keys
+        .where((key) => !_attachments.containsKey(key))
         .toList();
     final history = Boxes.getChatHistory();
     try {
-      if (imageMaps.isNotEmpty) await _images.putAll(imageMaps);
+      if (attachmentMaps.isNotEmpty) await _attachments.putAll(attachmentMaps);
       final existing = history.get(chatId);
       final firstPrompt = messages.firstWhere(
         (message) => message.role == Role.user,
@@ -119,21 +136,80 @@ class ChatRepository {
           response: latest.text,
           timestamp: DateTime.now(),
           imagesUrls: allImageKeys.toList(),
-          title: existing?.title,
+          title: existing?.title ?? title,
           isPinned: existing?.isPinned ?? false,
           transcript: messages.map((message) => message.toMap()).toList(),
           mode: mode.name,
+          options: options.toMap(),
         ),
       );
     } catch (_) {
-      if (newKeys.isNotEmpty) {
-        try {
-          await _images.deleteAll(newKeys);
-        } catch (_) {
-          // A later conversation deletion also removes unreferenced images.
-        }
-      }
+      await _discardAttachments(newKeys);
       rethrow;
+    }
+  }
+
+  Future<List<Message>> saveBranch({
+    required String chatId,
+    required String title,
+    required Iterable<Message> prefix,
+    required ChatMode mode,
+    required ChatOptions options,
+  }) async {
+    final copied = <(String, String), String>{};
+    final messages = <Message>[];
+    try {
+      // Each branch owns its media. Copy one attachment at a time to bound memory use.
+      for (final message in prefix) {
+        for (final reference in message.attachmentRefs.toSet()) {
+          final source = (message.chatId, reference);
+          if (copied.containsKey(source)) continue;
+          final attachment = await loadAttachment(message.chatId, reference);
+          if (attachment == null) {
+            throw const ChatException(
+              'An attachment in this conversation is unavailable.',
+            );
+          }
+          final key = attachmentKey(chatId, _uuid.v4());
+          copied[source] = key;
+          await _attachments.put(key, attachment.toMap());
+        }
+        messages.add(
+          message.copyWith(
+            messageId: _uuid.v4(),
+            chatId: chatId,
+            imagesUrls: [
+              for (final key in message.imagesUrls)
+                copied[(message.chatId, key)]!,
+            ],
+            documentRefs: [
+              for (final key in message.documentRefs)
+                copied[(message.chatId, key)]!,
+            ],
+          ),
+        );
+      }
+      await save(
+        chatId: chatId,
+        messages: messages,
+        mode: mode,
+        options: options,
+        newAttachments: const {},
+        title: title,
+      );
+      return messages;
+    } catch (_) {
+      await _discardAttachments(copied.values);
+      rethrow;
+    }
+  }
+
+  Future<void> _discardAttachments(Iterable<String> keys) async {
+    if (keys.isEmpty) return;
+    try {
+      await _attachments.deleteAll(keys);
+    } catch (_) {
+      // Clearing history also removes unreferenced attachments.
     }
   }
 
@@ -173,6 +249,16 @@ class ChatRepository {
     }
   }
 
+  Future<void> saveOptions(String chatId, ChatOptions options) async {
+    final chat = getChat(chatId);
+    if (chat == null)
+      throw const ChatException('This chat is no longer available.');
+    await Boxes.getChatHistory().put(
+      chatId,
+      chat.withDetails(options: options.toMap()),
+    );
+  }
+
   Future<void> togglePin(String chatId) async {
     final chat = getChat(chatId);
     if (chat != null) {
@@ -192,17 +278,18 @@ class ChatRepository {
     if (Hive.isBoxOpen(legacyBox) || await Hive.boxExists(legacyBox)) {
       await Hive.deleteBoxFromDisk(legacyBox);
     }
-    final prefix = imageKey(chatId, '');
-    final mediaKeys = _images.keys
+    final prefix = attachmentKey(chatId, '');
+    final mediaKeys = _attachments.keys
         .whereType<String>()
         .where((key) => key.startsWith(prefix))
         .toList();
-    if (mediaKeys.isNotEmpty) await _images.deleteAll(mediaKeys);
+    if (mediaKeys.isNotEmpty) await _attachments.deleteAll(mediaKeys);
     if (messages.any(
-          (message) =>
-              message.imagesUrls.any((key) => !key.startsWith(_imagePrefix)),
+          (message) => message.imagesUrls.any(
+            (key) => !key.startsWith(_attachmentPrefix),
+          ),
         ) ||
-        chat.imagesUrls.any((key) => !key.startsWith(_imagePrefix))) {
+        chat.imagesUrls.any((key) => !key.startsWith(_attachmentPrefix))) {
       await deleteLegacyChatImages(_storageDirectory, chatId);
     }
     await history.delete(chatId);
@@ -218,6 +305,6 @@ class ChatRepository {
       await Hive.deleteBoxFromDisk(box);
     }
     await clearLegacyChatImages(storageDirectory);
-    await _images.clear();
+    await _attachments.clear();
   }
 }

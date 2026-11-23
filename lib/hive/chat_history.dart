@@ -31,6 +31,9 @@ class ChatHistory extends HiveObject {
   @HiveField(8)
   final String? mode;
 
+  @HiveField(9)
+  final Map? options;
+
   ChatHistory({
     required this.chatId,
     required this.prompt,
@@ -41,14 +44,18 @@ class ChatHistory extends HiveObject {
     this.isPinned = false,
     this.transcript,
     this.mode,
+    this.options,
   });
 
-  String get displayTitle {
-    final value = (title ?? prompt).replaceAll(RegExp(r'\s+'), ' ').trim();
+  String get displayTitle => formatTitle(title ?? prompt);
+
+  static String formatTitle(String text) {
+    final value = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     return value.isEmpty ? 'Conversation' : value;
   }
 
-  ChatHistory withDetails({String? title, bool? isPinned}) => ChatHistory(
+  ChatHistory withDetails({String? title, bool? isPinned, Map? options}) =>
+      ChatHistory(
         chatId: chatId,
         prompt: prompt,
         response: response,
@@ -58,5 +65,6 @@ class ChatHistory extends HiveObject {
         isPinned: isPinned ?? this.isPinned,
         transcript: transcript,
         mode: mode,
+        options: options ?? this.options,
       );
 }

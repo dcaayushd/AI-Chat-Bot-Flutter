@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:chatbotapp/apis/gemini_client.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/models/message.dart';
@@ -41,8 +42,10 @@ void main() {
 
       final data = jsonDecode(await body.bytesToString()) as Map;
       expect(
-        data['systemInstruction']['parts'].last['text'],
-        ChatMode.coding.instruction,
+        (data['systemInstruction']['parts'] as List).map(
+          (part) => part['text'],
+        ),
+        contains(ChatMode.coding.instruction),
       );
       final contents = data['contents'] as List;
       expect(contents.map((entry) => entry['role']), ['user', 'model', 'user']);
@@ -85,6 +88,31 @@ void main() {
 
     expect(chunks.map((chunk) => chunk.text).join(), 'Hello 世界');
     expect(chunks.last.truncated, isTrue);
+    expect(chunks.last.finished, isTrue);
+  });
+
+  test('rejects mislabeled PDFs and unreadable text files', () {
+    expect(
+      () => ChatDocument.fromBytes(
+        'image.pdf',
+        MockClient.pngResponse().bodyBytes,
+      ),
+      throwsA(isA<ChatException>()),
+    );
+    expect(
+      () => ChatDocument.fromBytes(
+        'text.txt',
+        Uint8List.fromList([0xff, 0xfe, 0xff]),
+      ),
+      throwsA(isA<ChatException>()),
+    );
+    expect(
+      () => ChatDocument.fromBytes(
+        'notes.md',
+        Uint8List.fromList(utf8.encode('a' * 20001)),
+      ),
+      throwsA(isA<ChatException>()),
+    );
   });
 
   test('maps quota responses without exposing their raw body', () async {

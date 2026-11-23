@@ -26,13 +26,14 @@ class ChatHistoryAdapter extends TypeAdapter<ChatHistory> {
       isPinned: fields[6] == null ? false : fields[6] as bool,
       transcript: (fields[7] as List?)?.whereType<Map>().toList(),
       mode: fields[8] as String?,
+      options: fields[9] is Map ? fields[9] as Map : null,
     );
   }
 
   @override
   void write(BinaryWriter writer, ChatHistory obj) {
     writer
-      ..writeByte(9)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.chatId)
       ..writeByte(1)
@@ -50,7 +51,9 @@ class ChatHistoryAdapter extends TypeAdapter<ChatHistory> {
       ..writeByte(7)
       ..write(obj.transcript)
       ..writeByte(8)
-      ..write(obj.mode);
+      ..write(obj.mode)
+      ..writeByte(9)
+      ..write(obj.options);
   }
 
   @override

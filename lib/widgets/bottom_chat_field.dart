@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:chatbotapp/models/chat_attachment.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
@@ -8,20 +10,22 @@ import 'package:chatbotapp/utilities/animated_dialog.dart';
 import 'package:chatbotapp/utilities/app_motion.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
-import 'package:chatbotapp/widgets/preview_images_widget.dart';
+import 'package:chatbotapp/widgets/chat_attachments.dart';
+import 'package:file_selector/file_selector.dart' as files;
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
-enum _AttachmentSource { photos, camera }
+enum _AttachmentSource { photos, camera, documents }
 
 class BottomChatField extends StatefulWidget {
   const BottomChatField({
     super.key,
     required this.conversationVersion,
     required this.isBusy,
+    required this.isChangingConversation,
     required this.isGenerating,
     required this.canStop,
     required this.compact,
@@ -29,6 +33,7 @@ class BottomChatField extends StatefulWidget {
 
   final int conversationVersion;
   final bool isBusy;
+  final bool isChangingConversation;
   final bool isGenerating;
   final bool canStop;
   final bool compact;
@@ -41,7 +46,7 @@ class BottomChatFieldState extends State<BottomChatField> {
   final _text = TextEditingController();
   final _focus = FocusNode();
   final _picker = ImagePicker();
-  List<ChatImage> _images = const [];
+  List<ChatAttachment> _attachments = const [];
   late final VoiceInputProvider _voice;
   String _voiceSeed = '';
   String _lastTranscript = '';
@@ -65,7 +70,7 @@ class BottomChatFieldState extends State<BottomChatField> {
     super.didUpdateWidget(oldWidget);
     if (widget.conversationVersion != oldWidget.conversationVersion) {
       _acceptVoice = false;
-      _images = const [];
+      _attachments = const [];
       _text.clear();
       if (_voice.isListening || _voice.isStarting) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -76,6 +81,7 @@ class BottomChatFieldState extends State<BottomChatField> {
   }
 
   void useDraft(String text) {
+    if (context.read<ChatProvider>().isChangingConversation) return;
     cancelDictation();
     _text.value = TextEditingValue(
       text: text,
@@ -99,17 +105,17 @@ class BottomChatFieldState extends State<BottomChatField> {
     super.dispose();
   }
 
-  bool get _hasDraft => _text.text.trim().isNotEmpty || _images.isNotEmpty;
+  bool get hasDraft => _text.text.trim().isNotEmpty || _attachments.isNotEmpty;
 
   Future<void> _submit() async {
     final chat = context.read<ChatProvider>();
-    if (_submitting || _picking || chat.isBusy || !_hasDraft) return;
+    if (_submitting || _picking || chat.isBusy || !hasDraft) return;
 
     final enableHaptics = context.read<SettingsProvider>().enableHaptics;
     final version = widget.conversationVersion;
     _submitting = true;
     TextEditingValue? draft;
-    List<ChatImage>? images;
+    List<ChatAttachment>? attachments;
     try {
       if (_voice.isStarting) {
         cancelDictation();
@@ -121,16 +127,22 @@ class BottomChatFieldState extends State<BottomChatField> {
       }
       _acceptVoice = false;
       draft = _text.value;
-      images = _images;
+      attachments = _attachments;
       _text.clear();
-      setState(() => _images = const []);
-      final result = chat.send(draft.text, images: images);
+      setState(() => _attachments = const []);
+      final result = chat.send(
+        draft.text,
+        images: attachments.whereType<ChatImage>().toList(),
+        documents: attachments.whereType<ChatDocument>().toList(),
+      );
       if (enableHaptics) unawaited(HapticFeedback.lightImpact());
       await result;
     } catch (error) {
       if (!mounted || version != chat.conversationVersion) return;
       if (draft != null && _text.text.isEmpty) _text.value = draft;
-      if (images != null && _images.isEmpty) setState(() => _images = images!);
+      if (attachments != null && _attachments.isEmpty) {
+        setState(() => _attachments = attachments!);
+      }
       showAppSnackBar(context, formatChatError(error), bottomOffset: 78);
     } finally {
       _submitting = false;
@@ -207,9 +219,19 @@ class BottomChatFieldState extends State<BottomChatField> {
     final version = widget.conversationVersion;
     try {
       final result = await _picker.retrieveLostData();
-      if (!mounted || widget.conversationVersion != version) return;
+      if (!mounted ||
+          widget.conversationVersion != version ||
+          _picking ||
+          _submitting) {
+        return;
+      }
       if (result.files case final files?) {
-        await _addFiles(files, version);
+        setState(() => _picking = true);
+        try {
+          await _addFiles(files, version);
+        } finally {
+          if (mounted) setState(() => _picking = false);
+        }
       } else if (result.exception != null) {
         showAppSnackBar(
           context,
@@ -230,17 +252,17 @@ class BottomChatFieldState extends State<BottomChatField> {
     }
   }
 
-  Future<void> _pickImages() async {
+  Future<void> _pickAttachments() async {
     if (_picking) return;
     final version = widget.conversationVersion;
-    final remaining = ChatImage.maxCount - _images.length;
+    final remaining = ChatAttachment.maxCount - _attachments.length;
     if (remaining <= 0) return;
     setState(() => _picking = true);
     try {
       final platform = Theme.of(context).platform;
       final source = await showAdaptiveActionSheet<_AttachmentSource>(
         context: context,
-        title: 'Attach images',
+        title: 'Add attachment',
         actions: [
           const AdaptiveSheetAction(
             label: 'Photos',
@@ -253,13 +275,23 @@ class BottomChatFieldState extends State<BottomChatField> {
               label: 'Camera',
               value: _AttachmentSource.camera,
             ),
+          if (_attachments.whereType<ChatDocument>().length <
+              ChatDocument.maxCount)
+            const AdaptiveSheetAction(
+              label: 'Documents',
+              value: _AttachmentSource.documents,
+            ),
         ],
       );
       if (!mounted || widget.conversationVersion != version || source == null) {
         return;
       }
       final List<XFile> picked;
-      if (source == _AttachmentSource.photos && remaining > 1) {
+      if (source == _AttachmentSource.documents) {
+        picked = await files.openFiles(
+          acceptedTypeGroups: [ChatDocument.acceptedTypes],
+        );
+      } else if (source == _AttachmentSource.photos && remaining > 1) {
         picked = await _picker.pickMultiImage(
           maxWidth: 1600,
           maxHeight: 1600,
@@ -279,12 +311,16 @@ class BottomChatFieldState extends State<BottomChatField> {
         );
         picked = file == null ? [] : [file];
       }
-      await _addFiles(picked, version);
+      await _addFiles(
+        picked,
+        version,
+        documents: source == _AttachmentSource.documents,
+      );
     } catch (error) {
       if (mounted && widget.conversationVersion == version) {
         final message = error is ChatException
             ? error.message
-            : 'Could not attach images.';
+            : 'Could not attach files.';
         showAppSnackBar(context, message, bottomOffset: 78);
       }
     } finally {
@@ -292,35 +328,48 @@ class BottomChatFieldState extends State<BottomChatField> {
     }
   }
 
-  Future<void> _addFiles(List<XFile> files, int version) async {
+  Future<void> _addFiles(
+    List<XFile> files,
+    int version, {
+    bool documents = false,
+  }) async {
     if (files.isEmpty || !mounted || widget.conversationVersion != version) {
       return;
     }
-    final selected = [..._images];
-    var bytes = selected.fold(0, (total, image) => total + image.bytes.length);
+    final selected = [..._attachments];
+    var bytes = selected.fold(0, (total, file) => total + file.bytes.length);
+    var documentCount = selected.whereType<ChatDocument>().length;
     String? problem;
     for (final file in files) {
-      if (selected.length >= ChatImage.maxCount) {
-        problem = 'You can attach up to 4 images.';
+      if (selected.length >= ChatAttachment.maxCount) {
+        problem = 'You can attach up to 4 files.';
+        break;
+      }
+      if (documents && documentCount >= ChatDocument.maxCount) {
+        problem = 'You can attach up to 2 documents.';
         break;
       }
       try {
-        final image = await ChatImage.fromFile(file);
-        if (bytes + image.bytes.length > ChatImage.maxRequestBytes) {
+        final attachment = documents
+            ? await ChatDocument.fromFile(file)
+            : await ChatImage.fromFile(file);
+        if (!mounted || widget.conversationVersion != version) return;
+        if (bytes + attachment.bytes.length > ChatAttachment.maxRequestBytes) {
           problem = 'Attachments can total up to 10 MB.';
           continue;
         }
-        selected.add(image);
-        bytes += image.bytes.length;
+        selected.add(attachment);
+        bytes += attachment.bytes.length;
+        if (documents) documentCount++;
       } catch (error) {
         problem = error is ChatException
             ? error.message
-            : 'Some images could not be read.';
+            : 'Some files could not be read.';
       }
     }
 
     if (!mounted || widget.conversationVersion != version) return;
-    setState(() => _images = selected);
+    setState(() => _attachments = selected);
     if (problem != null) showAppSnackBar(context, problem, bottomOffset: 78);
   }
 
@@ -378,14 +427,14 @@ class BottomChatFieldState extends State<BottomChatField> {
                   ],
                 ),
               ),
-            if (_images.isNotEmpty)
-              PreviewImagesWidget.draft(
-                images: _images,
+            if (_attachments.isNotEmpty)
+              ChatAttachments.draft(
+                attachments: _attachments,
                 height: widget.compact ? 66 : 96,
                 onRemoveAt: _picking
                     ? null
                     : (index) => setState(() {
-                        _images = [..._images]..removeAt(index);
+                        _attachments = [..._attachments]..removeAt(index);
                       }),
               ),
             Padding(
@@ -394,15 +443,19 @@ class BottomChatFieldState extends State<BottomChatField> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   IconButton.filledTonal(
-                    tooltip: 'Attach images',
-                    onPressed: _picking || _images.length >= ChatImage.maxCount
+                    tooltip: 'Add attachment',
+                    onPressed:
+                        widget.isChangingConversation ||
+                            _picking ||
+                            _attachments.length >= ChatAttachment.maxCount
                         ? null
-                        : _pickImages,
-                    icon: const Icon(Icons.add_photo_alternate_outlined),
+                        : _pickAttachments,
+                    icon: const Icon(Icons.attach_file_rounded),
                   ),
                   Expanded(
                     child: Focus(
                       canRequestFocus: false,
+                      descendantsAreFocusable: !widget.isChangingConversation,
                       onKeyEvent: (_, event) =>
                           _handleEnter(event, settings.sendWithEnter),
                       child: TextField(
@@ -444,7 +497,20 @@ class BottomChatFieldState extends State<BottomChatField> {
                       ),
                     ),
                   const SizedBox(width: 4),
-                  if (widget.isGenerating)
+                  if (widget.isChangingConversation)
+                    const SizedBox.square(
+                      dimension: 48,
+                      child: Center(
+                        child: SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            semanticsLabel: 'Switching conversations',
+                          ),
+                        ),
+                      ),
+                    )
+                  else if (widget.isGenerating)
                     IconButton.filled(
                       tooltip: 'Stop generating',
                       onPressed: widget.canStop
@@ -457,7 +523,7 @@ class BottomChatFieldState extends State<BottomChatField> {
                       valueListenable: _text,
                       builder: (context, value, child) => IconButton.filled(
                         tooltip: 'Send message',
-                        onPressed: widget.isBusy || _picking || !_hasDraft
+                        onPressed: widget.isBusy || _picking || !hasDraft
                             ? null
                             : _submit,
                         icon: const Icon(Icons.arrow_upward_rounded),

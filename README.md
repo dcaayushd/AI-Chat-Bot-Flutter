@@ -26,12 +26,15 @@ Both debug assets and explicit build-time values are accessible to anyone with t
 ## Chat
 
 - Choose **General**, **Writing**, **Coding**, or **Study** to tailor replies and starter prompts.
-- Watch answers as they stream. Stop a reply and keep the partial result, retry a failed turn, or regenerate the last reply.
-- Attach up to four JPEG, PNG, WebP, HEIC, or HEIF images. The composer accepts up to 4 MB per image and 10 MB per message. Follow-ups include recent messages and images within the request budget.
+- Watch answers as they stream. Use **Continue reply** to pick up an incomplete answer. Regenerate a reply to try a different answer and open **Reply versions** to inspect earlier versions or restore one for the latest turn. Each reply keeps up to four earlier versions.
+- Open **Chat options** to set the reply length and add instructions for that conversation. Saved chats and branches keep these options.
+- Attach photos or select **Documents** for PDF, TXT, Markdown, CSV, and JSON files. Each message accepts four attachments, including up to two documents, with a combined limit of 10 MB. Images are limited to 4 MB and PDFs to 6 MB. Text files must use UTF-8 and fit within 20,000 characters. [Gemini document handling](https://aistudio.google.com/docs/document-processing).
+- Follow-ups include recent messages and attachments within the request budget. Replies indicate when the request used a reduced context.
 - Use the microphone to dictate on platforms with speech recognition. Copy a reply, an individual code block, or an entire conversation as Markdown.
-- Search saved conversations by title or any message, rename or pin them, and open them to continue. Existing Hive conversations can be reopened and searched.
+- Search saved conversations by title or message. The sidebar keeps history visible on wider screens. On phones, use **History** to open, rename, or pin a chat.
+- Choose **Branch from this reply** or use **Prompt actions → Edit in a branch**. The new conversation keeps the context through the selected turn and its own copies of the attachments. Both conversations are available in history.
 
-**Save history** controls local storage. Turning it off keeps new turns and their images in memory for the current conversation. Use **Clear history** to delete existing saved conversations. Gemini receives the prompt and recent context whenever you send a message.
+**Save history** controls local storage. Turning it off keeps new turns and their attachments in memory for the current conversation. Use **Clear history** to delete existing saved conversations. Gemini receives the prompt and recent context whenever you send a message.
 
 ## Checks
 

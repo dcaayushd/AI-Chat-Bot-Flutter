@@ -14,7 +14,16 @@ String transcriptAsMarkdown(String title, Iterable<Message> messages) {
     if (message.imagesUrls.isNotEmpty && message.role == Role.user) {
       final count = message.imagesUrls.length;
       output.writeln(
-          count == 1 ? '[1 attached image]\n' : '[$count attached images]\n');
+        count == 1 ? '[1 attached image]\n' : '[$count attached images]\n',
+      );
+    }
+    if (message.documentRefs.isNotEmpty && message.role == Role.user) {
+      final count = message.documentRefs.length;
+      output.writeln(
+        count == 1
+            ? '[1 attached document]\n'
+            : '[$count attached documents]\n',
+      );
     }
     output.writeln(message.text);
     output.writeln();

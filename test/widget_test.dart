@@ -1,19 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import 'package:chatbotapp/apis/gemini_client.dart';
+import 'package:chatbotapp/constants/constants.dart';
+import 'package:chatbotapp/hive/chat_history.dart';
+import 'package:chatbotapp/models/chat_options.dart';
+import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/providers/user_profile_provider.dart';
 import 'package:chatbotapp/providers/voice_input_provider.dart';
+import 'package:chatbotapp/screens/chat_history_screen.dart';
 import 'package:chatbotapp/screens/chat_screen.dart';
 import 'package:chatbotapp/themes/my_theme.dart';
+import 'package:chatbotapp/widgets/bottom_chat_field.dart';
 
 Widget _app(ChatProvider chat, {ThemeMode themeMode = ThemeMode.light}) {
   return MultiProvider(
@@ -73,6 +81,236 @@ void main() {
     await tester.pumpAndSettle();
     expect(chat.isConfigured, isTrue);
     expect(chat.hasSessionKey, isTrue);
+  });
+
+  testWidgets('configures, continues, and restores a reply on a phone', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final requests = <Map>[];
+    final chat = ChatProvider(
+      gemini: GeminiClient(
+        httpClient: MockClient((request) async {
+          requests.add(jsonDecode(request.body) as Map);
+          final first = requests.length == 1;
+          final payload = jsonEncode({
+            'candidates': [
+              {
+                'content': {
+                  'parts': [
+                    {'text': first ? 'Part one' : ' and part two.'},
+                  ],
+                },
+                'finishReason': first ? 'MAX_TOKENS' : 'STOP',
+              },
+            ],
+          });
+          return http.Response('data: $payload\n\n', 200);
+        }),
+      ),
+      developmentKey: 'test-key',
+      shouldSaveHistory: () => false,
+    );
+    addTearDown(chat.dispose);
+    await tester.pumpWidget(_app(chat, themeMode: ThemeMode.dark));
+
+    Future<void> tapAndAwaitReply(Finder action) async {
+      await tester.runAsync(() async {
+        final done = Completer<void>();
+        var started = false;
+        void listen() {
+          if (chat.isGenerating) {
+            started = true;
+          } else if (started && !done.isCompleted) {
+            done.complete();
+          }
+        }
+
+        chat.addListener(listen);
+        try {
+          await tester.tap(action);
+          await done.future.timeout(const Duration(seconds: 5));
+        } finally {
+          chat.removeListener(listen);
+        }
+      });
+      await tester.pumpAndSettle();
+    }
+
+    await tester.tap(find.byTooltip('Chat options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Balanced'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Concise').last);
+    await tester.pumpAndSettle();
+    final instructions = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(instructions, 'Use plain language.');
+    await tester.tap(find.text('Save options'));
+    await tester.pumpAndSettle();
+    expect(chat.options.length, ReplyLength.concise);
+
+    await tester.enterText(find.byType(TextField), 'Write two parts');
+    await tester.pump();
+    await tapAndAwaitReply(find.byTooltip('Send message'));
+    expect(
+      (requests.single['systemInstruction']['parts'] as List).map(
+        (part) => part['text'],
+      ),
+      contains('Use plain language.'),
+    );
+    expect(
+      requests.single['generationConfig']['maxOutputTokens'],
+      ReplyLength.concise.maxOutputTokens,
+    );
+    expect(chat.generationError, isNull);
+    expect(chat.messages.last.role, Role.assistant);
+    expect(chat.messages.last.status, ReplyStatus.truncated);
+    expect(chat.canContinueLastReply, isTrue);
+    await tapAndAwaitReply(find.text('Continue reply'));
+    expect(chat.messages.last.text, 'Part one and part two.');
+
+    await tester.tap(find.byTooltip('Reply versions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Earlier reply 1'), findsOneWidget);
+    await tester.tap(find.text('Use this version'));
+    await tester.pumpAndSettle();
+    expect(chat.messages.last.text, 'Part one');
+    expect(find.text('Continue reply'), findsOneWidget);
+  });
+
+  testWidgets('searches and branches in the wide workspace', (tester) async {
+    tester.view.physicalSize = const Size(1240, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final reply = jsonEncode({
+      'candidates': [
+        {
+          'content': {
+            'parts': [
+              {'text': 'An outline of the project'},
+            ],
+          },
+          'finishReason': 'STOP',
+        },
+      ],
+    });
+    final chat = ChatProvider(
+      gemini: GeminiClient(
+        httpClient: MockClient(
+          (_) async => http.Response('data: $reply\n\n', 200),
+        ),
+      ),
+      developmentKey: 'test-key',
+    );
+    addTearDown(chat.dispose);
+    await tester.runAsync(() async {
+      final dir = await Directory.systemTemp.createTemp('chat-workspace-');
+      addTearDown(() async {
+        await Hive.close();
+        await dir.delete(recursive: true);
+      });
+      Hive.init(dir.path);
+      Hive.registerAdapter(ChatHistoryAdapter());
+      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
+      await Hive.openLazyBox<Map>(Constants.chatImagesBox);
+      await chat.send('Roadmap');
+      await chat.newChat();
+      await chat.send('Weekend plans');
+    });
+    await tester.pumpWidget(_app(chat));
+    await tester.pumpAndSettle();
+
+    final sidebar = find.byType(ChatHistoryPanel);
+    final search = find.descendant(
+      of: sidebar,
+      matching: find.byType(TextField),
+    );
+    Finder historyTitle(String value) =>
+        find.descendant(of: sidebar, matching: find.text(value));
+    expect(historyTitle('Roadmap'), findsOneWidget);
+    expect(historyTitle('Weekend plans'), findsOneWidget);
+
+    await tester.enterText(search, 'outline');
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(historyTitle('Roadmap'), findsOneWidget);
+    expect(historyTitle('Weekend plans'), findsOneWidget);
+
+    await tester.enterText(search, 'weekend');
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(historyTitle('Roadmap'), findsNothing);
+    expect(historyTitle('Weekend plans'), findsOneWidget);
+    await tester.tap(find.byTooltip('Clear search'));
+    await tester.pumpAndSettle();
+
+    final sourceId = chat.currentChatId;
+    await tester.runAsync(() async {
+      final branchOpened = Completer<void>();
+      void handleBranch() {
+        if (chat.currentChatId != sourceId &&
+            !chat.isBusy &&
+            !branchOpened.isCompleted) {
+          branchOpened.complete();
+        }
+      }
+
+      chat.addListener(handleBranch);
+      try {
+        await tester.tap(find.byTooltip('Branch from this reply'));
+        await branchOpened.future.timeout(const Duration(seconds: 5));
+      } finally {
+        chat.removeListener(handleBranch);
+      }
+    });
+    await tester.pumpAndSettle();
+    expect(chat.title, 'Branch · Weekend plans');
+    expect(historyTitle('Weekend plans'), findsOneWidget);
+    expect(historyTitle('Branch · Weekend plans'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Prompt actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit in a branch'));
+    await tester.pumpAndSettle();
+    final editField = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    expect(
+      tester.widget<TextField>(editField).controller?.text,
+      'Weekend plans',
+    );
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    final composer = find.descendant(
+      of: find.byType(BottomChatField),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(composer, 'An unsent follow-up');
+    await tester.tap(historyTitle('Weekend plans'));
+    await tester.pumpAndSettle();
+    expect(find.text('The current draft will be discarded.'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    tester.view.physicalSize = const Size(360, 740);
+    await tester.pumpAndSettle();
+    expect(sidebar, findsNothing);
+    expect(find.byTooltip('History'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(composer).controller?.text,
+      'An unsent follow-up',
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('renders a streaming code block and stops generation', (

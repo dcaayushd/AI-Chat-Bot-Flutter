@@ -1,5 +1,7 @@
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/utilities/app_snackbar.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/assistant_message_widget.dart';
 import 'package:chatbotapp/widgets/my_message_widget.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,13 +11,28 @@ class ChatMessages extends StatelessWidget {
   const ChatMessages({
     super.key,
     required this.scrollController,
-    required this.onRetry,
     required this.onUseDraft,
+    required this.onBranch,
+    required this.onEditPrompt,
   });
 
   final ScrollController scrollController;
-  final VoidCallback onRetry;
   final ValueChanged<String> onUseDraft;
+  final ValueChanged<String> onBranch;
+  final ValueChanged<Message> onEditPrompt;
+
+  Future<void> _runAction(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, formatChatError(error), bottomOffset: 78);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +53,12 @@ class ChatMessages extends StatelessWidget {
           return _ChatNotice(
             generationError: problem,
             storageError: chat.storageError,
-            onRetry: needsRetry ? onRetry : null,
+            onRetry: needsRetry
+                ? () => _runAction(
+                    context,
+                    () => chat.retryLastReply(afterError: true),
+                  )
+                : null,
           );
         }
         final message = chat.visibleMessageAt(index);
@@ -45,15 +67,27 @@ class ChatMessages extends StatelessWidget {
             key: ValueKey(message.messageId),
             message: message,
             onUseDraft: () => onUseDraft(message.text),
+            onEditInBranch: chat.canBranch ? () => onEditPrompt(message) : null,
           );
         }
+        final isLatest = index == count - 1 && !chat.isBusy;
         return AssistantMessageWidget(
           key: ValueKey(message.messageId),
           message: message,
           streaming: message.messageId == chat.streamingReply?.messageId,
-          onRegenerate: index == count - 1 && !chat.isBusy && !needsRetry
-              ? onRetry
+          onRegenerate: isLatest && !needsRetry
+              ? () => _runAction(context, chat.retryLastReply)
               : null,
+          onContinue: isLatest && chat.canContinueLastReply
+              ? () => _runAction(context, chat.continueLastReply)
+              : null,
+          onRestore: isLatest
+              ? (revision) => _runAction(
+                  context,
+                  () => chat.restoreReply(message.messageId, revision),
+                )
+              : null,
+          onBranch: chat.canBranch ? () => onBranch(message.messageId) : null,
         );
       },
     );
@@ -87,7 +121,9 @@ class _ChatNotice extends StatelessWidget {
                   children: [
                     Expanded(child: Text(generationError ?? 'No reply yet')),
                     TextButton(
-                        onPressed: onRetry, child: const Text('Try again')),
+                      onPressed: onRetry,
+                      child: const Text('Try again'),
+                    ),
                   ],
                 ),
               if (storageError case final error?)

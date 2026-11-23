@@ -1,22 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:chatbotapp/apis/gemini_client.dart';
 import 'package:chatbotapp/constants/constants.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/chat_repository.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
+import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-String _event(String text, {bool done = true}) {
+String _event(String text, {bool done = true, String finish = 'STOP'}) {
   final json = jsonEncode({
     'candidates': [
       {
@@ -25,7 +29,7 @@ String _event(String text, {bool done = true}) {
             {'text': text},
           ],
         },
-        if (done) 'finishReason': 'STOP',
+        if (done) 'finishReason': finish,
       },
     ],
   });
@@ -63,6 +67,201 @@ void main() {
   }
 
   test(
+    'reopens chat options and revises a document prompt in a separate branch',
+    () async {
+      final requests = <Map>[];
+      MockClient transport() => MockClient((request) async {
+        requests.add(jsonDecode(request.body) as Map);
+        return http.Response(_event('Answer ${requests.length}'), 200);
+      });
+      final source = createChat(transport());
+      final notes = ChatDocument.fromBytes(
+        'notes.md',
+        Uint8List.fromList(utf8.encode('# Test plan')),
+      );
+      final pdf = ChatDocument.fromBytes(
+        'sample.pdf',
+        Uint8List.fromList(utf8.encode('%PDF-1.7\n')),
+      );
+      await source.send('Give me a study strategy');
+      await source.send('Explain these references', documents: [notes, pdf]);
+      await source.send('A later question');
+      final sourceId = source.currentChatId;
+      const options = ChatOptions(
+        length: ReplyLength.detailed,
+        instructions: 'Use concrete examples.',
+      );
+      await source.updateOptions(options);
+      await source.renameChat(sourceId, 'Project notes');
+
+      final history = Boxes.getChatHistory();
+      await history.close();
+      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
+      final reopened = createChat(transport());
+      await reopened.openChat(sourceId);
+      expect(reopened.options, options);
+      final originalReferences = reopened.messages[2].documentRefs;
+
+      await reopened.editPromptInBranch(
+        reopened.messages[2].messageId,
+        'Explain the tradeoffs',
+      );
+      final branchId = reopened.currentChatId;
+      expect(branchId, isNot(sourceId));
+      expect(reopened.messages.map((message) => message.text), [
+        'Give me a study strategy',
+        'Answer 1',
+        'Explain the tradeoffs',
+        'Answer 4',
+      ]);
+      expect(reopened.options, options);
+      expect(
+        ChatOptions.fromMap(repository.getChat(branchId)?.options),
+        options,
+      );
+      expect(
+        requests.last['generationConfig']['maxOutputTokens'],
+        ReplyLength.detailed.maxOutputTokens,
+      );
+      expect(
+        (requests.last['systemInstruction']['parts'] as List).map(
+          (part) => part['text'],
+        ),
+        contains(options.instructions),
+      );
+      expect(requests.last['contents'].last['parts'], [
+        {'text': 'Explain the tradeoffs'},
+        {'text': 'Attached file "notes.md"\n# Test plan'},
+        {'text': 'Attached file "sample.pdf"'},
+        {
+          'inlineData': {
+            'mimeType': 'application/pdf',
+            'data': base64Encode(pdf.bytes),
+          },
+        },
+      ]);
+      final original = await repository.loadMessages(
+        repository.getChat(sourceId)!,
+      );
+      expect(original[2].text, 'Explain these references');
+      expect(original[4].text, 'A later question');
+
+      final copiedReferences = reopened.messages[2].documentRefs;
+      expect(copiedReferences, isNot(originalReferences));
+      await reopened.deleteChat(sourceId);
+      final surviving = await reopened.attachmentFor(
+        branchId,
+        copiedReferences.first,
+      ) as ChatDocument;
+      expect(surviving.text, notes.text);
+      expect(reopened.exportCurrentChat(), contains('[2 attached documents]'));
+      expect(
+        await repository.loadAttachment(sourceId, originalReferences.first),
+        isNull,
+      );
+    },
+  );
+
+  test('continues and regenerates without duplicating prompts, then restores a saved version', () async {
+    final requests = <List>[];
+    final chat = createChat(
+      MockClient((request) async {
+        requests.add(jsonDecode(request.body)['contents'] as List);
+        return switch (requests.length) {
+          1 => http.Response(_event('Part one', finish: 'MAX_TOKENS'), 200),
+          2 => http.Response('{}', 503),
+          3 => http.Response(_event(' and part two.'), 200),
+          _ => http.Response(_event('A different answer'), 200),
+        };
+      }),
+    );
+    await chat.send('A wide topic');
+    final answerId = chat.messages.last.messageId;
+    expect(chat.canContinueLastReply, isTrue);
+    await chat.continueLastReply();
+    expect(chat.messages.last.text, 'Part one');
+    expect(chat.messages.last.previousReplies, isEmpty);
+    expect(chat.generationError, contains('temporarily unavailable'));
+
+    await chat.retryLastReply(afterError: true);
+    expect(requests.last.map((turn) => turn['role']), [
+      'user',
+      'model',
+      'user',
+    ]);
+    expect(requests.last[1]['parts'], [
+      {'text': 'Part one'},
+    ]);
+    expect(requests.last.last['parts'].single['text'], startsWith('Continue'));
+    expect(chat.messages, hasLength(2));
+    expect(chat.messages.last.text, 'Part one and part two.');
+    expect(
+      chat.messages.last.previousReplies.single.status,
+      ReplyStatus.truncated,
+    );
+    expect(chat.canContinueLastReply, isFalse);
+
+    await chat.retryLastReply();
+    expect(requests.last, hasLength(1));
+    expect(chat.messages.last.messageId, answerId);
+    expect(chat.messages.last.text, 'A different answer');
+    expect(chat.messages.last.previousReplies, hasLength(2));
+    final partial = chat.messages.last.previousReplies.last;
+    await chat.restoreReply(answerId, partial);
+    expect(chat.messages.last.text, 'Part one');
+    expect(chat.canContinueLastReply, isTrue);
+    expect(requests, hasLength(4));
+
+    final reopened = createChat(
+      MockClient((_) async => http.Response(_event('Fresh answer'), 200)),
+    );
+    await reopened.openChat(chat.currentChatId);
+    expect(reopened.messages.last.status, ReplyStatus.truncated);
+    expect(reopened.messages.last.previousReplies.map((r) => r.text), [
+      'A different answer',
+      'Part one and part two.',
+    ]);
+    for (var attempt = 0; attempt < 5; attempt++) {
+      await reopened.retryLastReply();
+    }
+    expect(
+      reopened.messages.last.previousReplies,
+      hasLength(Message.maxPreviousReplies),
+    );
+  });
+
+  test(
+    'reports omitted earlier documents and keeps current attachments required',
+    () async {
+      final calls = <List>[];
+      final provider = createChat(
+        MockClient((request) async {
+          calls.add(jsonDecode(request.body)['contents'] as List);
+          return http.Response(_event('Reply'), 200);
+        }),
+      );
+      final doc = ChatDocument.fromBytes(
+        'draft.txt',
+        Uint8List.fromList(utf8.encode('Document body')),
+      );
+      final media = Hive.lazyBox<Map>(Constants.chatImagesBox);
+      await provider.send('Use the draft', documents: [doc]);
+      await media.delete(provider.messages.first.documentRefs.single);
+      await provider.send('Use this current file', documents: [doc]);
+      expect(provider.messages.last.contextLimited, isTrue);
+      expect(calls.last.first['parts'], [
+        {'text': 'Use the draft'},
+      ]);
+      expect(calls.last.last['parts'].last['text'], contains('Document body'));
+      await media.delete(provider.messages[2].documentRefs.single);
+      await provider.retryLastReply();
+      expect(calls, hasLength(2));
+      expect(provider.generationError, contains('attachment is unavailable'));
+      expect(provider.messages.last.text, 'Reply');
+    },
+  );
+
+  test(
     'keeps multimodal context across private turns without writing to disk',
     () async {
       var saveHistory = false;
@@ -92,6 +291,11 @@ void main() {
         {'text': 'What about the image?'},
       ]);
       expect(provider.historyOff, isTrue);
+      expect(provider.canBranch, isFalse);
+      await expectLater(
+        provider.branchFrom(provider.messages.last.messageId),
+        throwsA(isA<ChatException>()),
+      );
       expect(Boxes.getChatHistory().isEmpty, isTrue);
       expect(Hive.lazyBox<Map>(Constants.chatImagesBox).isEmpty, isTrue);
 
@@ -101,6 +305,93 @@ void main() {
       expect(Boxes.getChatHistory().length, 1);
     },
   );
+
+  test('a saved branch keeps earlier context and owns its images', () async {
+    final requests = <List>[];
+    MockClient transport() => MockClient((request) async {
+      requests.add(jsonDecode(request.body)['contents'] as List);
+      return http.Response(_event('Answer ${requests.length}'), 200);
+    });
+    final source = createChat(transport())..setMode(ChatMode.study);
+    final image = ChatImage.fromBytes(
+      'notes.png',
+      MockClient.pngResponse().bodyBytes,
+    );
+    await source.send('Explain these notes', images: [image]);
+    await source.send('Details beyond the branch point');
+    final sourceId = source.currentChatId;
+    final sourceImage = source.messages.first.imagesUrls.single;
+    await source.renameChat(sourceId, 'Study notes');
+    await source.togglePin(sourceId);
+    expect(source.title, 'Study notes');
+
+    await source.branchFrom(source.messages[1].messageId);
+
+    final branchId = source.currentChatId;
+    expect(branchId, isNot(sourceId));
+    expect(source.title, 'Branch · Study notes');
+    expect(source.mode, ChatMode.study);
+    expect(source.messages.map((message) => message.text), [
+      'Explain these notes',
+      'Answer 1',
+    ]);
+    expect(requests, hasLength(2));
+    final branchImage = source.messages.first.imagesUrls.single;
+    expect(branchImage, isNot(sourceImage));
+    expect(repository.getChat(branchId)?.isPinned, isFalse);
+    expect(repository.getChat(sourceId)?.isPinned, isTrue);
+    expect(
+      (await repository.loadMessages(repository.getChat(sourceId)!)),
+      hasLength(4),
+    );
+
+    await source.deleteChat(sourceId);
+    final reopened = createChat(transport());
+    await reopened.openChat(branchId);
+    expect(reopened.title, source.title);
+    expect(
+      (await reopened.imageFor(branchId, branchImage))?.bytes,
+      image.bytes,
+    );
+    expect(await repository.loadImage(sourceId, sourceImage), isNull);
+
+    await reopened.send('Make a practice quiz');
+    expect(requests.last, hasLength(3));
+    expect(
+      requests.last.first['parts'][1]['inlineData']['mimeType'],
+      'image/png',
+    );
+    expect(requests.last[1]['parts'], [
+      {'text': 'Answer 1'},
+    ]);
+    expect(requests.last.last['parts'], [
+      {'text': 'Make a practice quiz'},
+    ]);
+  });
+
+  test('a branch with a missing image rolls back the copied media', () async {
+    final chat = createChat(
+      MockClient((_) async => http.Response(_event('An answer'), 200)),
+    );
+    final image = ChatImage.fromBytes(
+      'notes.png',
+      MockClient.pngResponse().bodyBytes,
+    );
+    await chat.send('Explain both images', images: [image, image]);
+    final originalId = chat.currentChatId;
+    final images = Hive.lazyBox<Map>(Constants.chatImagesBox);
+    await images.delete(chat.messages.first.imagesUrls.last);
+
+    await expectLater(
+      chat.branchFrom(chat.messages.last.messageId),
+      throwsA(isA<ChatException>()),
+    );
+
+    expect(chat.currentChatId, originalId);
+    expect(chat.isBusy, isFalse);
+    expect(Boxes.getChatHistory().keys, [originalId]);
+    expect(images.keys, [chat.messages.first.imagesUrls.first]);
+  });
 
   test(
     'a failed prompt survives a restart and retries without duplication',

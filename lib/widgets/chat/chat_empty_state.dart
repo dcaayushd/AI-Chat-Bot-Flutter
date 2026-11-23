@@ -19,7 +19,7 @@ class ChatEmptyState extends StatelessWidget {
   final ValueChanged<String> onSuggestionTap;
   final VoidCallback onConnect;
 
-  static const _maxWidth = 540.0;
+  static const _maxWidth = 600.0;
 
   @override
   Widget build(BuildContext context) {
@@ -27,76 +27,74 @@ class ChatEmptyState extends StatelessWidget {
     final colors = theme.colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final availableWidth = math.min(constraints.maxWidth, _maxWidth) - 8;
+        final width = math.min(constraints.maxWidth, _maxWidth);
         final textScale = MediaQuery.textScalerOf(context).scale(14);
-        final tileWidth = availableWidth >= 300 && textScale < 23
-            ? (availableWidth - 10) / 2
-            : availableWidth;
-
+        final tileWidth = width >= 304 && textScale < 23
+            ? (width - 12) / 2
+            : width;
         return SingleChildScrollView(
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: constraints.maxHeight),
             child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: _maxWidth),
+              child: SizedBox(
+                width: width,
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 26),
+                  padding: const EdgeInsets.symmetric(vertical: 24),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       DecoratedBox(
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(23),
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [
-                              colors.primaryContainer,
-                              colors.secondaryContainer
-                            ],
-                          ),
-                          border: Border.all(color: colors.outlineVariant),
+                          color: colors.primaryContainer,
+                          borderRadius: BorderRadius.circular(17),
                         ),
                         child: Padding(
-                          padding: const EdgeInsets.all(17),
-                          child: Icon(Icons.auto_awesome_rounded,
-                              color: colors.onPrimaryContainer, size: 30),
+                          padding: const EdgeInsets.all(13),
+                          child: Icon(
+                            Icons.auto_awesome_rounded,
+                            color: colors.onPrimaryContainer,
+                            size: 27,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 18),
-                      Text(
-                        'How can I help?',
-                        style: theme.textTheme.headlineMedium,
-                        textAlign: TextAlign.center,
+                      const SizedBox(height: 19),
+                      Semantics(
+                        header: true,
+                        child: Text(
+                          'How can I help?',
+                          style: width >= 480
+                              ? theme.textTheme.headlineLarge
+                              : theme.textTheme.headlineMedium,
+                        ),
                       ),
                       const SizedBox(height: 6),
                       Text(
                         mode.description,
-                        style: theme.textTheme.bodyLarge
-                            ?.copyWith(color: colors.onSurfaceVariant),
-                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                       if (showStarterPrompts) ...[
-                        const SizedBox(height: 22),
+                        const SizedBox(height: 24),
                         Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 10,
-                          runSpacing: 10,
+                          spacing: 12,
+                          runSpacing: 12,
                           children: [
                             for (final prompt in mode.prompts)
                               SizedBox(
                                 width: tileWidth,
                                 child: _PromptTile(
-                                    prompt: prompt,
-                                    onTap: () => onSuggestionTap(prompt)),
+                                  prompt: prompt,
+                                  onTap: () => onSuggestionTap(prompt),
+                                ),
                               ),
                           ],
                         ),
                       ],
                       if (!apiConfigured) ...[
-                        const SizedBox(height: 18),
-                        TextButton.icon(
+                        const SizedBox(height: 20),
+                        FilledButton.tonalIcon(
                           onPressed: onConnect,
                           icon: const Icon(Icons.key_outlined, size: 18),
                           label: const Text('Connect Gemini'),
@@ -125,7 +123,7 @@ class _PromptTile extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     return Material(
-      color: colors.surfaceContainerLow,
+      color: colors.surfaceContainerLowest,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: colors.outlineVariant),
@@ -133,14 +131,19 @@ class _PromptTile extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
-          child: Row(
-            children: [
-              Expanded(child: Text(prompt, style: theme.textTheme.labelLarge)),
-              const SizedBox(width: 4),
-              Icon(Icons.north_west_rounded, color: colors.primary, size: 16),
-            ],
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 58),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(prompt, style: theme.textTheme.labelLarge),
+                ),
+                const SizedBox(width: 8),
+                Icon(Icons.north_west_rounded, color: colors.primary, size: 17),
+              ],
+            ),
           ),
         ),
       ),

@@ -1,6 +1,7 @@
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/widgets/chat/assistant_response_content.dart';
+import 'package:chatbotapp/widgets/chat/reply_versions_dialog.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -10,11 +11,26 @@ class AssistantMessageWidget extends StatelessWidget {
     required this.message,
     required this.streaming,
     this.onRegenerate,
+    this.onBranch,
+    this.onContinue,
+    this.onRestore,
   });
 
   final Message message;
   final bool streaming;
   final VoidCallback? onRegenerate;
+  final VoidCallback? onBranch;
+  final VoidCallback? onContinue;
+  final ValueChanged<ReplyRevision>? onRestore;
+
+  Future<void> _viewVersions(BuildContext context) async {
+    final version = await showDialog<ReplyRevision>(
+      context: context,
+      builder: (context) =>
+          ReplyVersionsDialog(message: message, canRestore: onRestore != null),
+    );
+    if (version != null && context.mounted) onRestore?.call(version);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -80,29 +96,72 @@ class AssistantMessageWidget extends StatelessWidget {
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
+                if (!streaming && message.contextLimited)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(
+                      'Used recent conversation context',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
                 if (!streaming && message.text.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Wrap(
                       children: [
+                        if (onContinue != null)
+                          TextButton.icon(
+                            onPressed: onContinue,
+                            icon: const Icon(
+                              Icons.play_arrow_rounded,
+                              size: 18,
+                            ),
+                            label: const Text('Continue reply'),
+                          ),
                         IconButton(
                           tooltip: 'Copy reply',
                           onPressed: () async {
                             await Clipboard.setData(
-                                ClipboardData(text: message.text));
+                              ClipboardData(text: message.text),
+                            );
                             if (context.mounted) {
-                              showAppSnackBar(context, 'Reply copied',
-                                  bottomOffset: 78);
+                              showAppSnackBar(
+                                context,
+                                'Reply copied',
+                                bottomOffset: 78,
+                              );
                             }
                           },
-                          icon:
-                              const Icon(Icons.content_copy_rounded, size: 18),
+                          icon: const Icon(
+                            Icons.content_copy_rounded,
+                            size: 18,
+                          ),
                         ),
                         if (onRegenerate != null)
                           IconButton(
                             tooltip: 'Regenerate reply',
                             onPressed: onRegenerate,
                             icon: const Icon(Icons.refresh_rounded, size: 20),
+                          ),
+                        if (message.previousReplies.isNotEmpty)
+                          IconButton(
+                            tooltip: 'Reply versions',
+                            onPressed: () => _viewVersions(context),
+                            icon: const Icon(
+                              Icons.history_toggle_off_rounded,
+                              size: 19,
+                            ),
+                          ),
+                        if (onBranch != null)
+                          IconButton(
+                            tooltip: 'Branch from this reply',
+                            onPressed: onBranch,
+                            icon: const Icon(
+                              Icons.fork_right_rounded,
+                              size: 20,
+                            ),
                           ),
                       ],
                     ),

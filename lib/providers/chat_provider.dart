@@ -3,10 +3,14 @@ import 'dart:collection';
 
 import 'package:chatbotapp/apis/gemini_client.dart';
 import 'package:chatbotapp/apis/gemini_config.dart';
+import 'package:chatbotapp/apis/gemini_context.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/chat_repository.dart';
+import 'package:chatbotapp/models/chat_attachment.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
+import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/utilities/chat_transcript.dart';
@@ -27,8 +31,7 @@ class ChatProvider extends ChangeNotifier {
            : (GeminiConfig.normalizeKey(developmentKey) ?? '');
 
   static const maxPromptLength = 24000;
-  static const _maxContextLength = 80000;
-  static const _maxContextMessages = 24;
+  static const _maxContinuationLength = 12000;
   static const _streamUpdateInterval = Duration(milliseconds: 50);
   static const _uuid = Uuid();
 
@@ -38,13 +41,16 @@ class ChatProvider extends ChangeNotifier {
   final String _developmentKey;
 
   final List<Message> _messages = [];
-  final Map<String, ChatImage> _sessionImages = {};
+  final Map<String, ChatAttachment> _sessionAttachments = {};
   _Reply? _reply;
   String _sessionKey = '';
   String _chatId = '';
+  String? _title;
   String? _generationError;
   String? _storageError;
+  bool _retryContinuation = false;
   ChatMode _mode = ChatMode.general;
+  ChatOptions _options = const ChatOptions();
   int _conversationVersion = 0;
   bool _changingConversation = false;
   bool _sessionOnly = false;
@@ -57,19 +63,31 @@ class ChatProvider extends ChangeNotifier {
   bool get isConfigured => _apiKey.isNotEmpty;
   bool get hasSessionKey => _sessionKey.isNotEmpty;
   ChatMode get mode => _mode;
+  ChatOptions get options => _options;
   String get currentChatId => _chatId;
+  String? get title => _title;
   int get conversationVersion => _conversationVersion;
   bool get hasMessages => _messages.isNotEmpty;
   bool get isBusy => _reply != null || _changingConversation;
+  bool get isChangingConversation => _changingConversation;
   bool get isGenerating => _reply != null;
   bool get canStop => _reply?.canStop ?? false;
   bool get historyOff => _sessionOnly || !_shouldSaveHistory();
+  bool get canBranch =>
+      hasMessages && !isBusy && !historyOff && _storageError == null;
   String? get generationError => _generationError;
   String? get storageError => _storageError;
   Message? get streamingReply => _reply?.draft;
   List<Message> get messages => UnmodifiableListView(_messages);
   bool get hasUnansweredPrompt =>
       !isBusy && _messages.lastOrNull?.role == Role.user;
+  bool get canContinueLastReply {
+    if (isBusy || _messages.length < 2) return false;
+    final last = _messages.last;
+    return last.role == Role.assistant &&
+        last.status != ReplyStatus.complete &&
+        _messages[_messages.length - 2].role == Role.user;
+  }
 
   int get visibleMessageCount {
     final reply = _reply;
@@ -99,43 +117,72 @@ class ChatProvider extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> send(String text, {List<ChatImage> images = const []}) async {
-    _checkReady();
-    final prompt = text.trim();
-    if (prompt.isEmpty && images.isEmpty) return;
-    if (prompt.length > maxPromptLength) {
-      throw const ChatException('Keep your message under 24,000 characters.');
+  Future<void> updateOptions(ChatOptions options) async {
+    _checkIdle();
+    final value = options.normalized();
+    if (_options == value) return;
+    if (!historyOff && hasMessages && _repository.getChat(_chatId) != null) {
+      await _changeConversation(() async {
+        await _repository.saveOptions(_chatId, value);
+        _options = value;
+      });
+    } else {
+      _options = value;
+      _notify();
     }
-    if (images.length > ChatImage.maxCount ||
-        images.fold(0, (total, image) => total + image.bytes.length) >
-            ChatImage.maxRequestBytes) {
+  }
+
+  Future<void> send(
+    String text, {
+    List<ChatImage> images = const [],
+    List<ChatDocument> documents = const [],
+  }) async {
+    _checkReady();
+    final prompt = _validatePrompt(text);
+    final attachments = <ChatAttachment>[...images, ...documents];
+    if (prompt.isEmpty && attachments.isEmpty) return;
+    if (attachments.length > ChatAttachment.maxCount ||
+        documents.length > ChatDocument.maxCount ||
+        attachments.fold(0, (total, file) => total + file.bytes.length) >
+            ChatAttachment.maxRequestBytes) {
       throw const ChatException(
-        'Attach up to 4 images totaling 10 MB or less.',
+        'Attach up to 4 files, including up to 2 documents, totaling 10 MB or less.',
       );
     }
 
     if (_chatId.isEmpty) _chatId = _uuid.v4();
     final imageKeys = <String>[];
-    for (final image in images) {
-      final key = _repository.imageKey(_chatId, _uuid.v4());
-      _sessionImages[key] = image;
-      imageKeys.add(key);
+    final documentKeys = <String>[];
+    for (final attachment in attachments) {
+      final key = _repository.attachmentKey(_chatId, _uuid.v4());
+      _sessionAttachments[key] = attachment;
+      (attachment is ChatImage ? imageKeys : documentKeys).add(key);
     }
     _messages.add(
       Message(
         messageId: _uuid.v4(),
         chatId: _chatId,
         role: Role.user,
-        text: prompt.isEmpty ? 'Describe the attached images.' : prompt,
+        text: prompt.isEmpty
+            ? (documents.isEmpty
+                  ? 'Describe the attached images.'
+                  : 'Summarize the attached files.')
+            : prompt,
         imagesUrls: imageKeys,
+        documentRefs: documentKeys,
         timeSent: DateTime.now(),
       ),
     );
+    _title ??= ChatHistory.formatTitle(_messages.first.text);
     await _generate(_messages.length - 1, savePrompt: true);
   }
 
-  Future<void> retryLastReply() async {
+  Future<void> retryLastReply({bool afterError = false}) async {
     _checkReady();
+    if (afterError && _retryContinuation && canContinueLastReply) {
+      await continueLastReply();
+      return;
+    }
     final index = _messages.lastIndexWhere(
       (message) => message.role == Role.user,
     );
@@ -143,10 +190,46 @@ class ChatProvider extends ChangeNotifier {
     await _generate(index, savePrompt: false);
   }
 
-  void _checkReady() {
+  Future<void> continueLastReply() async {
+    _checkReady();
+    if (!canContinueLastReply) return;
+    await _generate(_messages.length - 2, savePrompt: false, continuing: true);
+  }
+
+  Future<void> restoreReply(String messageId, ReplyRevision revision) async {
+    _checkIdle();
+    final last = _messages.lastOrNull;
+    if (last == null ||
+        last.messageId != messageId ||
+        !last.previousReplies.contains(revision)) {
+      throw const ChatException(
+        'This reply version is no longer available to restore.',
+      );
+    }
+    await _changeConversation(() async {
+      _messages[_messages.length - 1] = last.selectRevision(revision);
+      _generationError = null;
+      _retryContinuation = false;
+      await _persist();
+    });
+  }
+
+  String _validatePrompt(String text) {
+    final prompt = text.trim();
+    if (prompt.length > maxPromptLength) {
+      throw const ChatException('Keep your message under 24,000 characters.');
+    }
+    return prompt;
+  }
+
+  void _checkIdle() {
     if (isBusy) {
       throw const ChatException('Wait for the current chat action to finish.');
     }
+  }
+
+  void _checkReady() {
+    _checkIdle();
     if (!isConfigured) {
       throw const ChatException(
         'Set API_KEY in .env for local development or add a session key in Settings.',
@@ -154,57 +237,93 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _generate(int promptIndex, {required bool savePrompt}) async {
-    final answerIndex = promptIndex + 1;
+  Future<void> _generate(
+    int promptIndex, {
+    required bool savePrompt,
+    bool continuing = false,
+  }) async {
+    final answerIndex = _messages.length > promptIndex + 1
+        ? _messages.length - 1
+        : promptIndex + 1;
     final previous = answerIndex < _messages.length
         ? _messages[answerIndex]
         : null;
+    final prefix = continuing ? previous!.text : '';
     final reply = _Reply(
       draft: Message(
-        messageId: _uuid.v4(),
+        messageId: previous?.messageId ?? _uuid.v4(),
         chatId: _chatId,
         role: Role.assistant,
-        text: '',
+        text: prefix,
         timeSent: DateTime.now(),
+        contextLimited: continuing && previous!.contextLimited,
       ),
       previousAnswer: previous,
+      prefix: prefix,
     );
     _reply = reply;
     _generationError = null;
+    _retryContinuation = false;
     if (historyOff) _sessionOnly = true;
     final key = _apiKey;
     final mode = _mode;
+    final options = _options;
     _notify();
 
     var status = ReplyStatus.complete;
     try {
       if (savePrompt) await _persist();
       if (!reply.stopped) {
-        final turns = await _contextFor(promptIndex, reply);
+        final tailStart = (prefix.length - _maxContinuationLength).clamp(
+          0,
+          prefix.length,
+        );
+        final context = await GeminiContext.build(
+          messages: _messages,
+          promptIndex: promptIndex,
+          loadAttachment: attachmentFor,
+          stopped: () => reply.stopped,
+          suffix: continuing
+              ? [
+                  GeminiTurn(Role.assistant, prefix.substring(tailStart)),
+                  const GeminiTurn(
+                    Role.user,
+                    'Continue the preceding reply from its ending. Begin with the next text, preserving spacing and formatting. Avoid repeating earlier text.',
+                  ),
+                ]
+              : const [],
+        );
+        reply.contextLimited =
+            context.limited || tailStart > 0 || reply.draft!.contextLimited;
         if (!reply.stopped) {
           final iterator = StreamIterator<GeminiChunk>(
             _gemini.streamReply(
               apiKey: key,
               mode: mode,
-              turns: turns,
+              turns: context.turns,
               abort: reply.abort.future,
+              options: options,
             ),
           );
           reply.iterator = iterator;
           while (await iterator.moveNext() && !reply.stopped) {
             final chunk = iterator.current;
             if (chunk.truncated) status = ReplyStatus.truncated;
-            if (chunk.text.isEmpty) continue;
-            reply.text.write(chunk.text);
-            _publishChunk(reply);
+            if (chunk.text.isNotEmpty) {
+              reply.delta.write(chunk.text);
+              _publishChunk(reply);
+            }
+            if (chunk.finished) break;
           }
         }
       }
       if (reply.stopped) {
         status = ReplyStatus.stopped;
-      } else if (reply.text.toString().trim().isEmpty) {
+      } else if (reply.delta.toString().trim().isEmpty) {
         _generationError = status == ReplyStatus.truncated
             ? 'Gemini reached its length limit before writing a reply. Try a narrower prompt.'
+            : continuing
+            ? 'Gemini did not add to this reply. Try again.'
             : 'Gemini returned an empty reply. Try again.';
         status = ReplyStatus.interrupted;
       }
@@ -215,15 +334,23 @@ class ChatProvider extends ChangeNotifier {
       reply.settling = true;
       reply.cancelTimer();
       reply.abortRequest();
+      reply.cancelStream();
+      _retryContinuation = continuing && _generationError != null;
       try {
-        final text = reply.text.toString();
-        // A failed regeneration leaves the previously saved answer available.
+        // Preserve a usable existing reply when a regeneration fails.
         final replacePrevious =
-            status == ReplyStatus.complete || status == ReplyStatus.truncated;
+            continuing ||
+            status == ReplyStatus.complete ||
+            status == ReplyStatus.truncated;
         if (!_disposed &&
-            text.trim().isNotEmpty &&
+            reply.delta.toString().trim().isNotEmpty &&
             (previous == null || replacePrevious)) {
-          final answer = reply.draft!.withReply(text, status: status);
+          final outcome = reply.draft!.copyWith(
+            text: reply.fullText,
+            status: status,
+            contextLimited: reply.contextLimited,
+          );
+          final answer = previous?.selectRevision(outcome.revision) ?? outcome;
           if (previous == null) {
             _messages.add(answer);
           } else {
@@ -242,15 +369,16 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _publishChunk(_Reply reply) {
-    if (reply.draft!.text.isEmpty) {
-      reply.draft = reply.draft!.withReply(reply.text.toString());
+    if (!reply.published) {
+      reply.published = true;
+      reply.draft = reply.draft!.copyWith(text: reply.fullText);
       _notify();
       return;
     }
     reply.updateTimer ??= Timer(_streamUpdateInterval, () {
       reply.updateTimer = null;
       if (reply.stopped || _disposed) return;
-      reply.draft = reply.draft!.withReply(reply.text.toString());
+      reply.draft = reply.draft!.copyWith(text: reply.fullText);
       _notify();
     });
   }
@@ -262,49 +390,17 @@ class ChatProvider extends ChangeNotifier {
     _notify();
   }
 
-  Future<List<GeminiTurn>> _contextFor(int promptIndex, _Reply reply) async {
-    final turns = <GeminiTurn>[];
-    var remainingText = _maxContextLength;
-    var remainingImages = ChatImage.maxRequestBytes;
-    final earliest = (promptIndex + 1 - _maxContextMessages).clamp(
-      0,
-      promptIndex,
-    );
-    for (
-      var index = promptIndex;
-      index >= earliest && !reply.stopped;
-      index--
-    ) {
-      final message = _messages[index];
-      if (index != promptIndex && message.text.length > remainingText) break;
-      remainingText -= message.text.length;
-      final images = <ChatImage>[];
-      if (message.role == Role.user) {
-        for (final reference in message.imagesUrls) {
-          if (reply.stopped || remainingImages == 0) break;
-          final image = await imageFor(message.chatId, reference);
-          if (image == null || image.bytes.length > remainingImages) {
-            if (index == promptIndex) {
-              throw const ChatException(
-                'An attached image is unavailable. Send the prompt with the image again.',
-              );
-            }
-            continue;
-          }
-          images.add(image);
-          remainingImages -= image.bytes.length;
-        }
-      }
-      turns.add(GeminiTurn(message.role, message.text, images));
-    }
-    return turns.reversed
-        .skipWhile((turn) => turn.role == Role.assistant)
-        .toList();
-  }
+  Future<ChatAttachment?> attachmentFor(
+    String chatId,
+    String reference,
+  ) async =>
+      (chatId == _chatId ? _sessionAttachments[reference] : null) ??
+      await _repository.loadAttachment(chatId, reference);
 
-  Future<ChatImage?> imageFor(String chatId, String reference) async =>
-      (chatId == _chatId ? _sessionImages[reference] : null) ??
-      await _repository.loadImage(chatId, reference);
+  Future<ChatImage?> imageFor(String chatId, String reference) async {
+    final attachment = await attachmentFor(chatId, reference);
+    return attachment is ChatImage ? attachment : null;
+  }
 
   Future<void> _persist() async {
     if (_disposed) return;
@@ -317,9 +413,10 @@ class ChatProvider extends ChangeNotifier {
         chatId: _chatId,
         messages: _messages,
         mode: _mode,
-        newImages: _sessionImages,
+        options: _options,
+        newAttachments: _sessionAttachments,
       );
-      _sessionImages.clear();
+      _sessionAttachments.clear();
       _storageError = null;
     } catch (_) {
       _storageError = 'This chat could not be saved to this device.';
@@ -340,10 +437,74 @@ class ChatProvider extends ChangeNotifier {
       final messages = await _repository.loadMessages(chat);
       _useConversation(
         chatId: chatId,
+        title: chat.displayTitle,
         messages: messages,
         mode: ChatMode.fromName(chat.mode),
+        options: ChatOptions.fromMap(chat.options),
       );
     });
+  }
+
+  Future<void> branchFrom(String messageId) async {
+    final index = _branchIndex(messageId);
+    await _branchMessages(_messages.take(index + 1));
+  }
+
+  Future<void> editPromptInBranch(String messageId, String text) async {
+    _checkReady();
+    final index = _branchIndex(messageId);
+    final selected = _messages[index];
+    final prompt = _validatePrompt(text);
+    if (selected.role != Role.user || prompt.isEmpty) {
+      throw const ChatException('Enter a prompt for the new branch.');
+    }
+    final branchId = await _branchMessages([
+      ..._messages.take(index),
+      selected.copyWith(text: prompt, timeSent: DateTime.now()),
+    ]);
+    if (!_disposed && _chatId == branchId && !isBusy) {
+      await _generate(index, savePrompt: false);
+    }
+  }
+
+  int _branchIndex(String messageId) {
+    if (!canBranch || _repository.getChat(_chatId) == null) {
+      throw const ChatException('Branching requires a saved conversation.');
+    }
+    final index = _messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    if (index == -1) {
+      throw const ChatException('This message is no longer available.');
+    }
+    return index;
+  }
+
+  Future<String> _branchMessages(Iterable<Message> prefix) async {
+    final chatId = _uuid.v4();
+    await _changeConversation(() async {
+      final mode = _mode;
+      final options = _options;
+      final source = _title ?? 'Conversation';
+      final title = 'Branch · ${String.fromCharCodes(source.runes.take(68))}';
+      final messages = await _repository.saveBranch(
+        chatId: chatId,
+        title: title,
+        prefix: prefix,
+        mode: mode,
+        options: options,
+      );
+      if (!_disposed) {
+        _useConversation(
+          chatId: chatId,
+          title: title,
+          messages: messages,
+          mode: mode,
+          options: options,
+        );
+      }
+    });
+    return chatId;
   }
 
   Future<void> deleteChat(String chatId) => _changeConversation(() async {
@@ -391,17 +552,22 @@ class ChatProvider extends ChangeNotifier {
 
   void _useConversation({
     String chatId = '',
+    String? title,
     List<Message> messages = const [],
     ChatMode mode = ChatMode.general,
+    ChatOptions options = const ChatOptions(),
   }) {
     _chatId = chatId;
+    _title = title;
     _messages
       ..clear()
       ..addAll(messages);
-    _sessionImages.clear();
+    _sessionAttachments.clear();
     _sessionOnly = false;
     _mode = mode;
+    _options = options;
     _generationError = null;
+    _retryContinuation = false;
     _storageError = null;
     _conversationVersion++;
   }
@@ -411,8 +577,13 @@ class ChatProvider extends ChangeNotifier {
     String query,
   ) => _repository.search(chats, query);
 
-  Future<void> renameChat(String chatId, String title) =>
-      _repository.rename(chatId, title);
+  Future<void> renameChat(String chatId, String title) async {
+    await _repository.rename(chatId, title);
+    if (_chatId == chatId) {
+      _title = _repository.getChat(chatId)?.displayTitle;
+      _notify();
+    }
+  }
 
   Future<void> togglePin(String chatId) => _repository.togglePin(chatId);
 
@@ -442,18 +613,26 @@ class ChatProvider extends ChangeNotifier {
 }
 
 class _Reply {
-  _Reply({required this.draft, required this.previousAnswer});
+  _Reply({
+    required this.draft,
+    required this.previousAnswer,
+    required this.prefix,
+  });
 
   final Message? previousAnswer;
+  final String prefix;
   final Completer<void> abort = Completer<void>();
   final Completer<void> done = Completer<void>();
-  final StringBuffer text = StringBuffer();
+  final StringBuffer delta = StringBuffer();
+  bool published = false;
+  bool contextLimited = false;
   Message? draft;
   Timer? updateTimer;
   StreamIterator<GeminiChunk>? iterator;
   bool stopped = false;
   bool settling = false;
 
+  String get fullText => '$prefix$delta';
   bool get canStop => !stopped && !settling;
 
   void stop() {
@@ -461,7 +640,12 @@ class _Reply {
     stopped = true;
     cancelTimer();
     abortRequest();
+    cancelStream();
+  }
+
+  void cancelStream() {
     final stream = iterator;
+    iterator = null;
     if (stream != null) unawaited(stream.cancel().onError((_, __) {}));
   }
 

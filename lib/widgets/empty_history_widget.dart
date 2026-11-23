@@ -4,11 +4,11 @@ class EmptyHistoryWidget extends StatelessWidget {
   const EmptyHistoryWidget({
     super.key,
     required this.isFiltered,
-    required this.onAction,
+    this.onAction,
   });
 
   final bool isFiltered;
-  final VoidCallback onAction;
+  final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -25,13 +25,17 @@ class EmptyHistoryWidget extends StatelessWidget {
             color: theme.colorScheme.primary,
           ),
           const SizedBox(height: 12),
-          Text(isFiltered ? 'No matches' : 'No saved chats',
-              style: theme.textTheme.titleMedium),
-          const SizedBox(height: 12),
-          OutlinedButton(
-            onPressed: onAction,
-            child: Text(isFiltered ? 'Clear search' : 'New chat'),
+          Text(
+            isFiltered ? 'No matches' : 'No saved chats',
+            style: theme.textTheme.titleMedium,
           ),
+          if (onAction != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: onAction,
+              child: Text(isFiltered ? 'Clear search' : 'New chat'),
+            ),
+          ],
         ],
       ),
     );

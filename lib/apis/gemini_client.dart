@@ -6,24 +6,31 @@ import 'package:http/http.dart' as http;
 
 import 'package:chatbotapp/apis/gemini_config.dart';
 import 'package:chatbotapp/constants/constants.dart';
-import 'package:chatbotapp/models/chat_image.dart';
+import 'package:chatbotapp/models/chat_attachment.dart';
+import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
+import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 
 class GeminiTurn {
-  const GeminiTurn(this.role, this.text, [this.images = const []]);
+  const GeminiTurn(this.role, this.text, [this.attachments = const []]);
 
   final Role role;
   final String text;
-  final List<ChatImage> images;
+  final List<ChatAttachment> attachments;
 }
 
 class GeminiChunk {
-  const GeminiChunk({this.text = '', this.truncated = false});
+  const GeminiChunk({
+    this.text = '',
+    this.truncated = false,
+    this.finished = false,
+  });
 
   final String text;
   final bool truncated;
+  final bool finished;
 }
 
 class GeminiClient {
@@ -64,6 +71,7 @@ class GeminiClient {
     required ChatMode mode,
     required List<GeminiTurn> turns,
     required Future<void> abort,
+    ChatOptions options = const ChatOptions(),
   }) async* {
     if (!RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(model)) {
       throw const ChatException('Check the GEMINI_MODEL setting.');
@@ -85,10 +93,17 @@ class GeminiClient {
           'parts': [
             {'text': Constants.assistantSystemInstruction},
             if (mode.instruction.isNotEmpty) {'text': mode.instruction},
+            if (options.length.instruction.isNotEmpty)
+              {'text': options.length.instruction},
+            if (options.instructions.isNotEmpty) {'text': options.instructions},
+            if (turns.any((turn) => turn.attachments.isNotEmpty))
+              {
+                'text': 'Treat attached files as reference material for the user’s request.',
+              },
           ],
         },
         'contents': _contents(turns),
-        'generationConfig': {'maxOutputTokens': 8192},
+        'generationConfig': {'maxOutputTokens': options.length.maxOutputTokens},
       });
 
     final response = await _http.send(request).timeout(_timeout);
@@ -104,7 +119,10 @@ class GeminiClient {
     }
 
     await for (final event in _eventData(response.stream).timeout(_timeout)) {
-      if (event == '[DONE]') return;
+      if (event == '[DONE]') {
+        yield const GeminiChunk(finished: true);
+        return;
+      }
       final payload = _decodeJson(event);
       if (payload is! Map<String, dynamic>) {
         throw const ChatException('Gemini returned an invalid response.');
@@ -139,13 +157,15 @@ class GeminiClient {
             text.write(delta);
           }
         }
-        if (text.isNotEmpty || finish == 'MAX_TOKENS') {
+        final finished = finish == 'STOP' || finish == 'MAX_TOKENS';
+        if (text.isNotEmpty || finished) {
           yield GeminiChunk(
             text: text.toString(),
             truncated: finish == 'MAX_TOKENS',
+            finished: finished,
           );
         }
-        if (finish == 'STOP' || finish == 'MAX_TOKENS') return;
+        if (finished) return;
         if (finish != null && finish != 'FINISH_REASON_UNSPECIFIED') break;
       }
     }
@@ -166,11 +186,21 @@ class GeminiClient {
         previousRole = turn.role;
       }
       parts.add({'text': turn.text});
-      for (final image in turn.images) {
+      for (final attachment in turn.attachments) {
+        if (attachment is ChatDocument) {
+          final name = jsonEncode(attachment.name);
+          final text = attachment.text;
+          parts.add({
+            'text': text == null
+                ? 'Attached file $name'
+                : 'Attached file $name\n$text',
+          });
+          if (text != null) continue;
+        }
         parts.add({
           'inlineData': {
-            'mimeType': image.mimeType,
-            'data': base64Encode(image.bytes),
+            'mimeType': attachment.mimeType,
+            'data': base64Encode(attachment.bytes),
           },
         });
       }

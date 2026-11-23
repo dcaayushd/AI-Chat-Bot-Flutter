@@ -1,4 +1,5 @@
-import 'package:chatbotapp/models/chat_mode.dart';
+import 'package:chatbotapp/models/chat_options.dart';
+import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/providers/user_profile_provider.dart';
@@ -9,6 +10,7 @@ import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/app_screen_scaffold.dart';
 import 'package:chatbotapp/widgets/bottom_chat_field.dart';
+import 'package:chatbotapp/widgets/chat/chat_dialogs.dart';
 import 'package:chatbotapp/widgets/chat/chat_empty_state.dart';
 import 'package:chatbotapp/widgets/chat/chat_header.dart';
 import 'package:chatbotapp/widgets/chat_messages.dart';
@@ -25,6 +27,10 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
+  static const _sidebarBreakpoint = 1000.0;
+  static const _sidebarWidth = 288.0;
+  static const _conversationWidth = 780.0;
+
   final _scroll = ScrollController();
   final _composer = GlobalKey<BottomChatFieldState>();
   bool _followLatest = true;
@@ -89,31 +95,101 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _useDraft(String text) => _composer.currentState?.useDraft(text);
 
-  Future<void> _newChat(ChatProvider chat) async {
-    if (chat.hasMessages && (chat.historyOff || chat.storageError != null)) {
+  Future<bool> _openChat(String? chatId) {
+    final chat = context.read<ChatProvider>();
+    if (chatId == chat.currentChatId) return Future.value(true);
+    return _switchChat(
+      chatId == null ? chat.newChat : () => chat.openChat(chatId),
+      title: chatId == null ? 'Start a new chat?' : 'Switch conversations?',
+      actionLabel: chatId == null ? 'Start new chat' : 'Switch chat',
+    );
+  }
+
+  Future<void> _branch(String messageId) async {
+    final chat = context.read<ChatProvider>();
+    await _switchChat(
+      () => chat.branchFrom(messageId),
+      title: 'Branch from this reply?',
+      actionLabel: 'Create branch',
+    );
+  }
+
+  Future<bool> _switchChat(
+    Future<void> Function() action, {
+    required String title,
+    required String actionLabel,
+  }) async {
+    final chat = context.read<ChatProvider>();
+    final version = chat.conversationVersion;
+    final hasDraft = _composer.currentState?.hasDraft ?? false;
+    final unsaved =
+        chat.hasMessages && (chat.historyOff || chat.storageError != null);
+    final message = switch ((hasDraft, unsaved)) {
+      (true, true) =>
+        'The current draft and unsaved messages will be discarded.',
+      (true, false) => 'The current draft will be discarded.',
+      (false, true) => 'The current conversation has unsaved messages.',
+      (false, false) => null,
+    };
+    if (message != null) {
       final confirmed = await showAnimatedConfirmationDialog(
         context: context,
-        title: 'Start a new chat?',
-        content: 'The current conversation has unsaved messages.',
-        actionText: 'Start new chat',
+        title: title,
+        content: message,
+        actionText: actionLabel,
       );
-      if (!mounted || !confirmed) return;
+      if (!mounted || !confirmed || version != chat.conversationVersion) {
+        return false;
+      }
     }
+
+    _composer.currentState?.cancelDictation();
     try {
-      await chat.newChat();
+      await action();
+      return true;
     } catch (error) {
       if (mounted) showAppSnackBar(context, formatChatError(error));
+      return false;
     }
   }
 
-  Future<void> _retry() async {
+  Future<void> _changeOptions() async {
+    final chat = context.read<ChatProvider>();
+    final version = chat.conversationVersion;
+    _composer.currentState?.cancelDictation();
+    final options = await showDialog<ChatOptions>(
+      context: context,
+      builder: (context) => ChatOptionsDialog(options: chat.options),
+    );
+    if (!mounted || options == null || version != chat.conversationVersion)
+      return;
     try {
-      await context.read<ChatProvider>().retryLastReply();
+      await chat.updateOptions(options);
     } catch (error) {
       if (mounted) {
         showAppSnackBar(context, formatChatError(error), bottomOffset: 78);
       }
     }
+  }
+
+  Future<void> _editInBranch(Message message) async {
+    final chat = context.read<ChatProvider>();
+    final version = chat.conversationVersion;
+    _composer.currentState?.cancelDictation();
+    final prompt = await showDialog<String>(
+      context: context,
+      builder: (context) => PromptEditorDialog(
+        text: message.text,
+        maxLength: ChatProvider.maxPromptLength,
+      ),
+    );
+    if (!mounted || prompt == null || version != chat.conversationVersion)
+      return;
+    await _switchChat(
+      () => chat.editPromptInBranch(message.messageId, prompt),
+      title: 'Send in a branch?',
+      actionLabel: 'Send in branch',
+    );
   }
 
   Future<void> _copyChat(ChatProvider chat) async {
@@ -131,6 +207,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _openSettings() => _openPage(const SettingsScreen());
+
   void _openPage(Widget page) {
     _composer.currentState?.cancelDictation();
     final reduceMotion =
@@ -146,122 +224,173 @@ class _ChatScreenState extends State<ChatScreen> {
     Navigator.of(context).push(route);
   }
 
+  Widget _messageList(int version) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: NotificationListener<ScrollMetricsNotification>(
+            onNotification: (notice) {
+              if (notice.depth == 0) _queueScrollUpdate();
+              return false;
+            },
+            child: ChatMessages(
+              key: ValueKey(version),
+              scrollController: _scroll,
+              onUseDraft: _useDraft,
+              onBranch: _branch,
+              onEditPrompt: _editInBranch,
+            ),
+          ),
+        ),
+        if (_jumpVisible)
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: IconButton.filledTonal(
+                tooltip: 'Jump to latest',
+                onPressed: _jumpToLatest,
+                icon: const Icon(Icons.arrow_downward_rounded),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
-    final userName = context.select<UserProfileProvider, String>(
-      (profile) => profile.firstName,
+    final userName = context.select(
+      (UserProfileProvider user) => user.firstName,
     );
     final chat = context.read<ChatProvider>();
-    _autoScroll = settings.autoScroll;
-
-    return Selector<
-      ChatProvider,
-      ({
-        bool hasMessages,
-        bool isConfigured,
-        bool historyOff,
-        bool isBusy,
-        bool isGenerating,
-        bool canStop,
-        ChatMode mode,
-        int version,
-      })
-    >(
-      selector: (context, chat) => (
+    final state = context.select(
+      (ChatProvider chat) => (
+        title: chat.title ?? 'Chat',
         hasMessages: chat.hasMessages,
         isConfigured: chat.isConfigured,
         historyOff: chat.historyOff,
         isBusy: chat.isBusy,
+        isChangingConversation: chat.isChangingConversation,
         isGenerating: chat.isGenerating,
         canStop: chat.canStop,
         mode: chat.mode,
         version: chat.conversationVersion,
       ),
-      builder: (context, state, _) {
-        if (_version != state.version) {
-          _version = state.version;
-          _followLatest = true;
-          _jumpVisible = false;
-          _queueScrollUpdate();
-        }
-        final bottomPadding = MediaQuery.paddingOf(context).bottom;
-        final roomHeight =
-            MediaQuery.sizeOf(context).height -
-            MediaQuery.viewInsetsOf(context).bottom;
-        return AppScreenScaffold(
-          maxContentWidth: 880,
-          padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPadding + 10),
-          child: Column(
+    );
+    _autoScroll = settings.autoScroll;
+    if (_version != state.version) {
+      _version = state.version;
+      _followLatest = true;
+      _jumpVisible = false;
+      _queueScrollUpdate();
+    }
+
+    final bottomPadding = MediaQuery.paddingOf(context).bottom;
+    final colors = Theme.of(context).colorScheme;
+    return AppScreenScaffold(
+      maxContentWidth: double.infinity,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final showSidebar = constraints.maxWidth >= _sidebarBreakpoint;
+          final gutter = showSidebar ? 28.0 : 16.0;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              ChatHeader(
-                userName: userName,
-                mode: state.mode,
-                historyOff: state.historyOff,
-                isBusy: state.isBusy,
-                onModeChanged: chat.setMode,
-                onOpenHistory: () => _openPage(const ChatHistoryScreen()),
-                onOpenSettings: () => _openPage(const SettingsScreen()),
-                onNewChat: () => _newChat(chat),
-                onCopyChat: state.hasMessages ? () => _copyChat(chat) : null,
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: state.hasMessages
-                    ? Stack(
-                        children: [
-                          Positioned.fill(
-                            child:
-                                NotificationListener<ScrollMetricsNotification>(
-                                  onNotification: (notice) {
-                                    if (notice.depth == 0) _queueScrollUpdate();
-                                    return false;
-                                  },
-                                  child: ChatMessages(
-                                    key: ValueKey(state.version),
-                                    scrollController: _scroll,
-                                    onRetry: _retry,
-                                    onUseDraft: _useDraft,
-                                  ),
-                                ),
-                          ),
-                          if (_jumpVisible)
-                            Align(
-                              alignment: Alignment.bottomCenter,
-                              child: Padding(
-                                padding: const EdgeInsets.only(bottom: 6),
-                                child: IconButton.filledTonal(
-                                  tooltip: 'Jump to latest',
-                                  onPressed: _jumpToLatest,
-                                  icon: const Icon(
-                                    Icons.arrow_downward_rounded,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      )
-                    : ChatEmptyState(
-                        mode: state.mode,
-                        apiConfigured: state.isConfigured,
-                        showStarterPrompts: settings.showStarterPrompts,
-                        onSuggestionTap: _useDraft,
-                        onConnect: () => _openPage(const SettingsScreen()),
+              if (showSidebar) ...[
+                SizedBox(
+                  width: _sidebarWidth,
+                  child: ColoredBox(
+                    color: colors.surfaceContainerLow,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        20,
+                        16,
+                        bottomPadding + 10,
                       ),
-              ),
-              const SizedBox(height: 8),
-              BottomChatField(
-                key: _composer,
-                conversationVersion: state.version,
-                isBusy: state.isBusy,
-                isGenerating: state.isGenerating,
-                canStop: state.canStop,
-                compact: roomHeight < 380,
+                      child: ChatHistoryPanel(
+                        onOpenChat: _openChat,
+                        onSettings: _openSettings,
+                      ),
+                    ),
+                  ),
+                ),
+                const VerticalDivider(width: 1),
+              ],
+              Expanded(
+                key: const ValueKey('conversation'),
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    gutter,
+                    showSidebar ? 16 : 8,
+                    gutter,
+                    bottomPadding + 12,
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: _conversationWidth,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ChatHeader(
+                            title: state.title,
+                            userName: userName,
+                            mode: state.mode,
+                            historyOff: state.historyOff,
+                            isBusy: state.isBusy,
+                            onModeChanged: chat.setMode,
+                            onOptions: _changeOptions,
+                            onOpenHistory: showSidebar
+                                ? null
+                                : () => _openPage(
+                                    ChatHistoryScreen(openChat: _openChat),
+                                  ),
+                            onOpenSettings: showSidebar ? null : _openSettings,
+                            onNewChat: showSidebar
+                                ? null
+                                : () => _openChat(null),
+                            onCopyChat: state.hasMessages
+                                ? () => _copyChat(chat)
+                                : null,
+                          ),
+                          const Divider(height: 20),
+                          Expanded(
+                            child: state.hasMessages
+                                ? _messageList(state.version)
+                                : ChatEmptyState(
+                                    mode: state.mode,
+                                    apiConfigured: state.isConfigured,
+                                    showStarterPrompts:
+                                        settings.showStarterPrompts,
+                                    onSuggestionTap: _useDraft,
+                                    onConnect: _openSettings,
+                                  ),
+                          ),
+                          const SizedBox(height: 8),
+                          BottomChatField(
+                            key: _composer,
+                            conversationVersion: state.version,
+                            isBusy: state.isBusy,
+                            isChangingConversation:
+                                state.isChangingConversation,
+                            isGenerating: state.isGenerating,
+                            canStop: state.canStop,
+                            compact: constraints.maxHeight < 380,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ],
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

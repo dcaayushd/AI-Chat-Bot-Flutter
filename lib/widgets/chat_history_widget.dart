@@ -14,20 +14,56 @@ class ChatHistoryWidget extends StatelessWidget {
     required this.chat,
     required this.onOpen,
     required this.onDelete,
+    this.compact = false,
+    this.selected = false,
   });
 
   final ChatHistory chat;
   final VoidCallback onOpen;
   final VoidCallback onDelete;
+  final bool compact;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final icon = chat.isPinned
+        ? Icons.push_pin_rounded
+        : chat.imagesUrls.isEmpty
+        ? Icons.chat_bubble_outline_rounded
+        : Icons.photo_library_outlined;
+
+    if (compact) {
+      return Material(
+        color: selected ? colors.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          selected: selected,
+          selectedColor: colors.onPrimaryContainer,
+          onTap: onOpen,
+          leading: Icon(icon, size: 18),
+          minLeadingWidth: 18,
+          horizontalTitleGap: 10,
+          contentPadding: const EdgeInsetsDirectional.only(start: 12, end: 2),
+          title: Text(
+            chat.displayTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: selected
+                ? const TextStyle(fontWeight: FontWeight.w600)
+                : null,
+          ),
+          trailing: _actions(context),
+        ),
+      );
+    }
     final date = MaterialLocalizations.of(context)
         .formatShortDate(chat.timestamp.toLocal());
 
     return Card(
+      color: selected ? colors.primaryContainer : null,
       semanticContainer: false,
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -40,14 +76,7 @@ class ChatHistoryWidget extends StatelessWidget {
               CircleAvatar(
                 backgroundColor: colors.primaryContainer,
                 foregroundColor: colors.onPrimaryContainer,
-                child: Icon(
-                  chat.isPinned
-                      ? Icons.push_pin_rounded
-                      : chat.imagesUrls.isEmpty
-                      ? Icons.chat_bubble_outline_rounded
-                      : Icons.photo_library_outlined,
-                  size: 19,
-                ),
+                child: Icon(icon, size: 19),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -74,36 +103,41 @@ class ChatHistoryWidget extends StatelessWidget {
                   ],
                 ),
               ),
-              PopupMenuButton<_HistoryAction>(
-                tooltip: 'Conversation actions',
-                onSelected: (action) => _handleAction(context, action),
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: _HistoryAction.rename,
-                    child: Text('Rename'),
-                  ),
-                  PopupMenuItem(
-                    value: _HistoryAction.pin,
-                    child: Text(chat.isPinned ? 'Unpin' : 'Pin'),
-                  ),
-                  const PopupMenuItem(
-                    value: _HistoryAction.copy,
-                    child: Text('Copy as Markdown'),
-                  ),
-                  const PopupMenuDivider(),
-                  PopupMenuItem(
-                    value: _HistoryAction.delete,
-                    child: Text(
-                      'Delete chat',
-                      style: TextStyle(color: colors.error),
-                    ),
-                  ),
-                ],
-              ),
+              _actions(context),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _actions(BuildContext context) {
+    return PopupMenuButton<_HistoryAction>(
+      tooltip: 'Conversation actions',
+      iconSize: 20,
+      onSelected: (action) => _handleAction(context, action),
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: _HistoryAction.rename,
+          child: Text('Rename'),
+        ),
+        PopupMenuItem(
+          value: _HistoryAction.pin,
+          child: Text(chat.isPinned ? 'Unpin' : 'Pin'),
+        ),
+        const PopupMenuItem(
+          value: _HistoryAction.copy,
+          child: Text('Copy as Markdown'),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: _HistoryAction.delete,
+          child: Text(
+            'Delete chat',
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        ),
+      ],
     );
   }
 
