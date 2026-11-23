@@ -14,12 +14,18 @@ class ChatMessages extends StatelessWidget {
     required this.onUseDraft,
     required this.onBranch,
     required this.onEditPrompt,
+    this.anchorIndex = 0,
+    this.highlightedMessageId,
   });
+
+  static const _center = ValueKey('conversation-center');
 
   final ScrollController scrollController;
   final ValueChanged<String> onUseDraft;
   final ValueChanged<String> onBranch;
   final ValueChanged<Message> onEditPrompt;
+  final int anchorIndex;
+  final String? highlightedMessageId;
 
   Future<void> _runAction(
     BuildContext context,
@@ -43,35 +49,37 @@ class ChatMessages extends StatelessWidget {
         !chat.isBusy && (problem != null || chat.hasUnansweredPrompt);
     final showFooter = needsRetry || chat.storageError != null;
 
-    return ListView.builder(
-      controller: scrollController,
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: const EdgeInsets.fromLTRB(0, 8, 0, 12),
-      itemCount: count + (showFooter ? 1 : 0),
-      itemBuilder: (context, index) {
-        if (index == count) {
-          return _ChatNotice(
-            generationError: problem,
-            storageError: chat.storageError,
-            onRetry: needsRetry
-                ? () => _runAction(
-                    context,
-                    () => chat.retryLastReply(afterError: true),
-                  )
-                : null,
-          );
-        }
-        final message = chat.visibleMessageAt(index);
-        if (message.role == Role.user) {
-          return MyMessageWidget(
+    Widget item(BuildContext context, int index) {
+      if (index == count) {
+        return _ChatNotice(
+          generationError: problem,
+          storageError: chat.storageError,
+          onRetry: needsRetry
+              ? () => _runAction(
+                  context,
+                  () => chat.retryLastReply(afterError: true),
+                )
+              : null,
+        );
+      }
+      final message = chat.visibleMessageAt(index);
+      if (message.role == Role.user) {
+        return _highlight(
+          context,
+          message,
+          MyMessageWidget(
             key: ValueKey(message.messageId),
             message: message,
             onUseDraft: () => onUseDraft(message.text),
             onEditInBranch: chat.canBranch ? () => onEditPrompt(message) : null,
-          );
-        }
-        final isLatest = index == count - 1 && !chat.isBusy;
-        return AssistantMessageWidget(
+          ),
+        );
+      }
+      final isLatest = index == count - 1 && !chat.isBusy;
+      return _highlight(
+        context,
+        message,
+        AssistantMessageWidget(
           key: ValueKey(message.messageId),
           message: message,
           streaming: message.messageId == chat.streamingReply?.messageId,
@@ -88,8 +96,65 @@ class ChatMessages extends StatelessWidget {
                 )
               : null,
           onBranch: chat.canBranch ? () => onBranch(message.messageId) : null,
-        );
-      },
+          onBookmark: chat.canBranch
+              ? () => _runAction(
+                  context,
+                  () => chat.toggleReplyBookmark(message.messageId),
+                )
+              : null,
+        ),
+      );
+    }
+
+    final start = anchorIndex.clamp(0, count);
+    final total = count + (showFooter ? 1 : 0);
+    Widget list(int itemCount, int Function(int) messageIndex) => SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, index) {
+          final absoluteIndex = messageIndex(index);
+          return IndexedSemantics(
+            index: absoluteIndex,
+            child: item(context, absoluteIndex),
+          );
+        },
+        childCount: itemCount,
+        addSemanticIndexes: false,
+      ),
+    );
+
+    // Both sides of the anchor are lazy, including when jumping into a long chat.
+    return CustomScrollView(
+      center: _center,
+      controller: scrollController,
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      semanticChildCount: total,
+      slivers: [
+        if (start > 0) list(start, (index) => start - 1 - index),
+        SliverPadding(
+          key: _center,
+          padding: const EdgeInsets.fromLTRB(0, 8, 0, 12),
+          sliver: list(total - start, (index) => start + index),
+        ),
+      ],
+    );
+  }
+
+  Widget _highlight(BuildContext context, Message message, Widget child) {
+    if (message.messageId != highlightedMessageId) return child;
+    final colors = Theme.of(context).colorScheme;
+    return Semantics(
+      selected: true,
+      child: Container(
+        key: const ValueKey('selected-message'),
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 0),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(23),
+          color: colors.primaryContainer.withValues(alpha: 0.42),
+          border: Border.all(color: colors.primary),
+        ),
+        child: child,
+      ),
     );
   }
 }

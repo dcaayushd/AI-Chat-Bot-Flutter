@@ -50,6 +50,7 @@ void main() {
     });
     await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
     await Hive.openLazyBox<Map>(Constants.chatImagesBox);
+    await Hive.openBox<String>(Constants.chatDraftsBox);
   });
 
   ChatProvider createChat(
@@ -65,6 +66,90 @@ void main() {
     addTearDown(provider.dispose);
     return provider;
   }
+
+  test(
+    'reopens each draft independently and removes drafts with their history',
+    () async {
+      var saveHistory = true;
+      final client = MockClient(
+        (_) async => http.Response(_event('An answer'), 200),
+      );
+      final chat = createChat(client, shouldSaveHistory: () => saveHistory);
+      chat.rememberDraft('An unsent new conversation');
+      await chat.flushDrafts();
+      await chat.send('A saved question');
+      final chatId = chat.currentChatId;
+      chat.rememberDraft('Follow-up for this topic');
+      await chat.flushDrafts();
+
+      saveHistory = false;
+      chat.rememberDraft('Private text');
+      await chat.flushDrafts();
+      expect(chat.draftText, isEmpty);
+      expect(
+        Hive.box<String>(Constants.chatDraftsBox).values,
+        isNot(contains('Private text')),
+      );
+
+      final drafts = Hive.box<String>(Constants.chatDraftsBox);
+      await drafts.close();
+      await Hive.openBox<String>(Constants.chatDraftsBox);
+      final reopened = createChat(client);
+      expect(reopened.draftText, 'An unsent new conversation');
+      await reopened.openChat(chatId);
+      expect(reopened.draftText, 'Follow-up for this topic');
+      await reopened.deleteChat(chatId);
+      expect(reopened.draftText, 'An unsent new conversation');
+      await reopened.clearAllChats();
+      expect(reopened.draftText, isEmpty);
+      expect(Hive.box<String>(Constants.chatDraftsBox).isEmpty, isTrue);
+    },
+  );
+
+  test(
+    'bookmarks survive reopening and are not duplicated by branches',
+    () async {
+      final original = createChat(
+        MockClient(
+          (_) async => http.Response(_event('Useful decision notes'), 200),
+        ),
+      );
+      await original.send('Plan the release');
+      final sourceId = original.currentChatId;
+      final replyId = original.messages.last.messageId;
+      await original.toggleReplyBookmark(replyId);
+      final bookmarkedAt = original.messages.last.bookmarkedAt;
+      expect(bookmarkedAt, isNotNull);
+      expect(
+        original
+            .findBookmarks(Boxes.getChatHistory().values, 'decision')
+            .single
+            .messageId,
+        replyId,
+      );
+
+      final history = Boxes.getChatHistory();
+      await history.close();
+      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
+      final reopened = createChat(
+        MockClient((_) async => http.Response(_event('Another answer'), 200)),
+      );
+      await reopened.openChat(sourceId);
+      expect(reopened.messages.last.bookmarkedAt, bookmarkedAt);
+      await reopened.branchFrom(replyId);
+      expect(reopened.messages.last.bookmarkedAt, isNull);
+      expect(
+        reopened.findBookmarks(Boxes.getChatHistory().values, '').single.chatId,
+        sourceId,
+      );
+      await reopened.openChat(sourceId);
+      await reopened.toggleReplyBookmark(replyId);
+      expect(
+        reopened.findBookmarks(Boxes.getChatHistory().values, ''),
+        isEmpty,
+      );
+    },
+  );
 
   test(
     'reopens chat options and revises a document prompt in a separate branch',

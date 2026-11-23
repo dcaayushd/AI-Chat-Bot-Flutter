@@ -16,6 +16,8 @@ class ChatHeader extends StatelessWidget {
     this.onOpenSettings,
     this.onNewChat,
     this.onCopyChat,
+    this.onOutline,
+    this.outlineOpen = false,
   });
 
   final String title;
@@ -29,6 +31,8 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback? onOpenSettings;
   final VoidCallback? onNewChat;
   final VoidCallback? onCopyChat;
+  final VoidCallback? onOutline;
+  final bool outlineOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -67,6 +71,19 @@ class ChatHeader extends StatelessWidget {
       onPressed: isBusy ? null : onOptions,
       icon: const Icon(Icons.tune_rounded, size: 20),
     );
+    final outlineAction = IconButton(
+      tooltip: outlineOpen
+          ? 'Hide conversation outline'
+          : 'Find in conversation',
+      onPressed: onOutline,
+      isSelected: outlineOpen,
+      icon: const Icon(Icons.find_in_page_outlined, size: 20),
+      selectedIcon: Icon(
+        Icons.find_in_page_rounded,
+        size: 20,
+        color: colors.primary,
+      ),
+    );
 
     if (onOpenHistory == null) {
       return Row(
@@ -76,6 +93,7 @@ class ChatHeader extends StatelessWidget {
           const SizedBox(width: 12),
           modePicker,
           optionsAction,
+          if (onOutline != null) outlineAction,
           if (onCopyChat != null) copyAction,
         ],
       );
@@ -112,6 +130,7 @@ class ChatHeader extends StatelessWidget {
           children: [
             modePicker,
             optionsAction,
+            if (onOutline != null) outlineAction,
             const SizedBox(width: 4),
             Flexible(
               child: Text(

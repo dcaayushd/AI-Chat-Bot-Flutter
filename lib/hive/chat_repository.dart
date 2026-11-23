@@ -13,6 +13,7 @@ import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
+import 'package:chatbotapp/models/reply_bookmark.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path/path.dart' as p;
@@ -34,6 +35,7 @@ class ChatRepository {
       Hive.openBox<UserModel>(Constants.userBox),
       Hive.openBox<Settings>(Constants.settingsBox),
       Hive.openLazyBox<Map>(Constants.chatImagesBox),
+      Hive.openBox<String>(Constants.chatDraftsBox),
     ]);
   }
 
@@ -176,6 +178,7 @@ class ChatRepository {
         }
         messages.add(
           message.copyWith(
+            clearBookmark: true,
             messageId: _uuid.v4(),
             chatId: chatId,
             imagesUrls: [
@@ -247,6 +250,49 @@ class ChatRepository {
     if (chat != null) {
       await Boxes.getChatHistory().put(chatId, chat.withDetails(title: name));
     }
+  }
+
+  List<ReplyBookmark> findBookmarks(Iterable<ChatHistory> chats, String query) {
+    final results = <ReplyBookmark>[];
+    for (final chat in chats) {
+      final title = chat.displayTitle;
+      final titleMatches = title.toLowerCase().contains(query);
+      for (final entry in chat.transcript ?? const <Map>[]) {
+        if (entry['role'] != Role.assistant.index) continue;
+        if (entry case {
+          'messageId': final String id,
+          'message': final String text,
+          'bookmarkedAt': final String rawTime,
+        }) {
+          final time = DateTime.tryParse(rawTime);
+          if (time == null ||
+              (!titleMatches && !text.toLowerCase().contains(query)))
+            continue;
+          results.add(
+            ReplyBookmark(
+              chatId: chat.chatId,
+              messageId: id,
+              chatTitle: title,
+              text: text,
+              savedAt: time,
+            ),
+          );
+        }
+      }
+    }
+    return results..sort((a, b) => b.savedAt.compareTo(a.savedAt));
+  }
+
+  Future<void> updateTranscript(String chatId, List<Message> messages) async {
+    final chat = getChat(chatId);
+    if (chat == null)
+      throw const ChatException('This chat is no longer available.');
+    await Boxes.getChatHistory().put(
+      chatId,
+      chat.withDetails(
+        transcript: messages.map((message) => message.toMap()).toList(),
+      ),
+    );
   }
 
   Future<void> saveOptions(String chatId, ChatOptions options) async {

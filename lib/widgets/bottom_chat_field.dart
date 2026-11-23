@@ -47,7 +47,10 @@ class BottomChatFieldState extends State<BottomChatField> {
   final _focus = FocusNode();
   final _picker = ImagePicker();
   List<ChatAttachment> _attachments = const [];
+  late final ChatProvider _chat;
   late final VoiceInputProvider _voice;
+  String _recordedText = '';
+  bool _privateDraft = false;
   String _voiceSeed = '';
   String _lastTranscript = '';
   String _lastVoiceError = '';
@@ -58,6 +61,9 @@ class BottomChatFieldState extends State<BottomChatField> {
   @override
   void initState() {
     super.initState();
+    _chat = context.read<ChatProvider>();
+    _restoreDraftText();
+    _text.addListener(_handleDraftText);
     _voice = context.read<VoiceInputProvider>()
       ..addListener(_handleVoiceUpdate);
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
@@ -71,7 +77,7 @@ class BottomChatFieldState extends State<BottomChatField> {
     if (widget.conversationVersion != oldWidget.conversationVersion) {
       _acceptVoice = false;
       _attachments = const [];
-      _text.clear();
+      _restoreDraftText();
       if (_voice.isListening || _voice.isStarting) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) cancelDictation();
@@ -80,8 +86,43 @@ class BottomChatFieldState extends State<BottomChatField> {
     }
   }
 
-  void useDraft(String text) {
-    if (context.read<ChatProvider>().isChangingConversation) return;
+  void _restoreDraftText() {
+    _privateDraft = false;
+    _recordedText = _chat.draftText;
+    _text.value = TextEditingValue(
+      text: _recordedText,
+      selection: TextSelection.collapsed(offset: _recordedText.length),
+    );
+  }
+
+  void _handleDraftText() {
+    final text = _text.text;
+    if (_recordedText == text) return;
+    _recordedText = text;
+    if (!_privateDraft && !_chat.historyOff) {
+      _chat.rememberDraft(text);
+    } else if (text.trim().isNotEmpty) {
+      _privateDraft = true;
+    }
+    if (text.trim().isEmpty) _privateDraft = false;
+  }
+
+  Future<void> useDraft(String text) async {
+    if (_chat.isChangingConversation) return;
+    final version = widget.conversationVersion;
+    if (_text.text.trim().isNotEmpty && _text.text != text) {
+      final replace = await showAnimatedConfirmationDialog(
+        context: context,
+        title: 'Replace draft?',
+        content: 'This will replace the text in the composer.',
+        actionText: 'Replace draft',
+      );
+      if (!mounted ||
+          !replace ||
+          version != _chat.conversationVersion ||
+          _chat.isChangingConversation)
+        return;
+    }
     cancelDictation();
     _text.value = TextEditingValue(
       text: text,
@@ -100,12 +141,16 @@ class BottomChatFieldState extends State<BottomChatField> {
   @override
   void dispose() {
     _voice.removeListener(_handleVoiceUpdate);
+    _text.removeListener(_handleDraftText);
     _text.dispose();
     _focus.dispose();
     super.dispose();
   }
 
   bool get hasDraft => _text.text.trim().isNotEmpty || _attachments.isNotEmpty;
+  bool get hasVolatileDraft =>
+      _attachments.isNotEmpty ||
+      ((_privateDraft || _chat.historyOff) && _text.text.trim().isNotEmpty);
 
   Future<void> _submit() async {
     final chat = context.read<ChatProvider>();
@@ -116,6 +161,7 @@ class BottomChatFieldState extends State<BottomChatField> {
     _submitting = true;
     TextEditingValue? draft;
     List<ChatAttachment>? attachments;
+    var wasPrivate = false;
     try {
       if (_voice.isStarting) {
         cancelDictation();
@@ -127,6 +173,7 @@ class BottomChatFieldState extends State<BottomChatField> {
       }
       _acceptVoice = false;
       draft = _text.value;
+      wasPrivate = _privateDraft;
       attachments = _attachments;
       _text.clear();
       setState(() => _attachments = const []);
@@ -139,7 +186,10 @@ class BottomChatFieldState extends State<BottomChatField> {
       await result;
     } catch (error) {
       if (!mounted || version != chat.conversationVersion) return;
-      if (draft != null && _text.text.isEmpty) _text.value = draft;
+      if (draft != null && _text.text.isEmpty) {
+        _privateDraft = wasPrivate;
+        _text.value = draft;
+      }
       if (attachments != null && _attachments.isEmpty) {
         setState(() => _attachments = attachments!);
       }
@@ -396,6 +446,9 @@ class BottomChatFieldState extends State<BottomChatField> {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final settings = context.watch<SettingsProvider>();
+    final draftError = context.select(
+      (ChatProvider chat) => chat.draftStorageError,
+    );
     final (listening, startingVoice) = context
         .select<VoiceInputProvider, (bool, bool)>(
           (voice) => (voice.isListening, voice.isStarting),
@@ -416,6 +469,16 @@ class BottomChatFieldState extends State<BottomChatField> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (draftError)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+                child: Text(
+                  'Could not update draft storage on this device.',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: colors.error,
+                  ),
+                ),
+              ),
             if (listening)
               const Padding(
                 padding: EdgeInsets.fromLTRB(16, 10, 16, 0),

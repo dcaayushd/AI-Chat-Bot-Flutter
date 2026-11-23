@@ -59,6 +59,7 @@ class Message {
     List<String> documentRefs = const [],
     this.status = ReplyStatus.complete,
     this.contextLimited = false,
+    this.bookmarkedAt,
     List<ReplyRevision> previousReplies = const [],
   }) : imagesUrls = List.unmodifiable(imagesUrls),
        documentRefs = List.unmodifiable(documentRefs),
@@ -77,6 +78,7 @@ class Message {
   final DateTime timeSent;
   final ReplyStatus status;
   final bool contextLimited;
+  final DateTime? bookmarkedAt;
   final List<ReplyRevision> previousReplies;
 
   Iterable<String> get attachmentRefs => imagesUrls.followedBy(documentRefs);
@@ -108,6 +110,12 @@ class Message {
         timeSent: sentAt,
         status: ReplyStatus.fromName(map['status']),
         contextLimited: map['contextLimited'] == true,
+        bookmarkedAt: switch (map['bookmarkedAt']) {
+          final String time when role == Role.assistant => DateTime.tryParse(
+            time,
+          ),
+          _ => null,
+        },
         previousReplies: switch (map['previousReplies']) {
           final List revisions =>
             revisions
@@ -133,6 +141,7 @@ class Message {
     'timeSent': timeSent.toIso8601String(),
     'status': status.name,
     if (contextLimited) 'contextLimited': true,
+    if (bookmarkedAt case final time?) 'bookmarkedAt': time.toIso8601String(),
     if (previousReplies.isNotEmpty)
       'previousReplies': previousReplies
           .map((revision) => revision.toMap())
@@ -166,6 +175,8 @@ class Message {
     List<String>? documentRefs,
     ReplyStatus? status,
     bool? contextLimited,
+    DateTime? bookmarkedAt,
+    bool clearBookmark = false,
     List<ReplyRevision>? previousReplies,
   }) => Message(
     messageId: messageId ?? this.messageId,
@@ -177,6 +188,7 @@ class Message {
     documentRefs: documentRefs ?? this.documentRefs,
     status: status ?? this.status,
     contextLimited: contextLimited ?? this.contextLimited,
+    bookmarkedAt: clearBookmark ? null : bookmarkedAt ?? this.bookmarkedAt,
     previousReplies: previousReplies ?? this.previousReplies,
   );
 }

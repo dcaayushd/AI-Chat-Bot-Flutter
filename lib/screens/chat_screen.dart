@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
+import 'package:chatbotapp/models/reply_bookmark.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/providers/user_profile_provider.dart';
@@ -13,6 +16,7 @@ import 'package:chatbotapp/widgets/bottom_chat_field.dart';
 import 'package:chatbotapp/widgets/chat/chat_dialogs.dart';
 import 'package:chatbotapp/widgets/chat/chat_empty_state.dart';
 import 'package:chatbotapp/widgets/chat/chat_header.dart';
+import 'package:chatbotapp/widgets/chat/conversation_outline.dart';
 import 'package:chatbotapp/widgets/chat_messages.dart';
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:flutter/services.dart';
@@ -30,40 +34,55 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _sidebarBreakpoint = 1000.0;
   static const _sidebarWidth = 288.0;
   static const _conversationWidth = 780.0;
+  static const _outlineBreakpoint = 1250.0;
+  static const _outlineWidth = 304.0;
 
-  final _scroll = ScrollController();
+  final _scroll = ScrollController(keepScrollOffset: false);
   final _composer = GlobalKey<BottomChatFieldState>();
+  late final AppLifecycleListener _lifecycle;
   bool _followLatest = true;
   bool _jumpVisible = false;
   bool _scrollQueued = false;
   bool _autoScroll = true;
+  bool _outlineOpen = false;
   int _version = 0;
+  int _jumpSequence = 0;
+  ({int version, int sequence, int index, String messageId})? _anchor;
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_handleScroll);
+    final chat = context.read<ChatProvider>();
+    _lifecycle = AppLifecycleListener(
+      onInactive: () => unawaited(chat.flushDrafts()),
+    );
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _scroll.dispose();
     super.dispose();
   }
 
   void _handleScroll() {
-    if (!_scroll.hasClients || !_scroll.position.hasContentDimensions) return;
-    _followLatest = _scroll.position.extentAfter < 72;
+    final position = _activeScrollPosition;
+    if (position == null) return;
+    _followLatest = position.extentAfter < 72;
     _syncJumpButton();
   }
 
+  ScrollPosition? get _activeScrollPosition {
+    if (_scroll.positions.length != 1) return null;
+    final position = _scroll.position;
+    return position.hasContentDimensions ? position : null;
+  }
+
   void _syncJumpButton() {
-    if (!mounted ||
-        !_scroll.hasClients ||
-        !_scroll.position.hasContentDimensions) {
-      return;
-    }
-    final show = _scroll.position.extentAfter >= 72;
+    final position = _activeScrollPosition;
+    if (!mounted || position == null) return;
+    final show = position.extentAfter >= 72;
     if (show != _jumpVisible) setState(() => _jumpVisible = show);
   }
 
@@ -72,12 +91,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollQueued = false;
-      if (!mounted ||
-          !_scroll.hasClients ||
-          !_scroll.position.hasContentDimensions) {
-        return;
-      }
-      final position = _scroll.position;
+      final position = _activeScrollPosition;
+      if (!mounted || position == null) return;
       if (_autoScroll && _followLatest && position.extentAfter > 0) {
         _scroll.jumpTo(position.maxScrollExtent);
       }
@@ -89,8 +104,73 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _jumpToLatest() {
     _followLatest = true;
-    if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    if (_activeScrollPosition case final position?) {
+      position.jumpTo(position.maxScrollExtent);
+    }
     _queueScrollUpdate();
+  }
+
+  bool _jumpToMessage(String messageId) {
+    final chat = context.read<ChatProvider>();
+    final index = chat.messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    if (index == -1) {
+      showAppSnackBar(context, 'This message is no longer available.');
+      return false;
+    }
+    setState(() {
+      _anchor = (
+        version: chat.conversationVersion,
+        sequence: ++_jumpSequence,
+        index: index,
+        messageId: messageId,
+      );
+      _followLatest = false;
+      _jumpVisible = false;
+    });
+    _queueScrollUpdate();
+    return true;
+  }
+
+  Future<bool> _openBookmark(ReplyBookmark bookmark) async {
+    final opened = await _openChat(bookmark.chatId);
+    return mounted && opened && _jumpToMessage(bookmark.messageId);
+  }
+
+  void _showOutline({required bool docked}) {
+    _composer.currentState?.cancelDictation();
+    if (docked) {
+      setState(() => _outlineOpen = !_outlineOpen);
+      return;
+    }
+    showModalBottomSheet<void>(
+      isScrollControlled: true,
+      useSafeArea: true,
+      context: context,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+        ),
+        child: FractionallySizedBox(
+          heightFactor: 0.86,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              child: ConversationOutline(
+                selectedMessageId: _anchor?.messageId,
+                onJump: (messageId) {
+                  if (_jumpToMessage(messageId))
+                    Navigator.of(sheetContext).pop();
+                },
+                onClose: () => Navigator.of(sheetContext).pop(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _useDraft(String text) => _composer.currentState?.useDraft(text);
@@ -121,13 +201,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }) async {
     final chat = context.read<ChatProvider>();
     final version = chat.conversationVersion;
-    final hasDraft = _composer.currentState?.hasDraft ?? false;
+    final hasDraft = _composer.currentState?.hasVolatileDraft ?? false;
     final unsaved =
         chat.hasMessages && (chat.historyOff || chat.storageError != null);
     final message = switch ((hasDraft, unsaved)) {
-      (true, true) =>
-        'The current draft and unsaved messages will be discarded.',
-      (true, false) => 'The current draft will be discarded.',
+      (true, true) => 'Unsaved messages, session-only draft text, and selected files will be cleared.',
+      (true, false) =>
+        'Session-only draft text and selected files will be cleared.',
       (false, true) => 'The current conversation has unsaved messages.',
       (false, false) => null,
     };
@@ -225,6 +305,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _messageList(int version) {
+    final anchor = _anchor;
     return Stack(
       children: [
         Positioned.fill(
@@ -234,7 +315,9 @@ class _ChatScreenState extends State<ChatScreen> {
               return false;
             },
             child: ChatMessages(
-              key: ValueKey(version),
+              key: ValueKey((version, anchor?.sequence ?? 0)),
+              anchorIndex: anchor?.index ?? 0,
+              highlightedMessageId: anchor?.messageId,
               scrollController: _scroll,
               onUseDraft: _useDraft,
               onBranch: _branch,
@@ -282,7 +365,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _autoScroll = settings.autoScroll;
     if (_version != state.version) {
       _version = state.version;
-      _followLatest = true;
+      if (_anchor?.version != _version) {
+        _anchor = null;
+        _followLatest = true;
+      }
       _jumpVisible = false;
       _queueScrollUpdate();
     }
@@ -294,6 +380,9 @@ class _ChatScreenState extends State<ChatScreen> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final showSidebar = constraints.maxWidth >= _sidebarBreakpoint;
+          final canDockOutline = constraints.maxWidth >= _outlineBreakpoint;
+          final showOutline =
+              state.hasMessages && canDockOutline && _outlineOpen;
           final gutter = showSidebar ? 28.0 : 16.0;
           return Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -312,6 +401,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       child: ChatHistoryPanel(
                         onOpenChat: _openChat,
+                        onOpenBookmark: _openBookmark,
                         onSettings: _openSettings,
                       ),
                     ),
@@ -344,10 +434,17 @@ class _ChatScreenState extends State<ChatScreen> {
                             isBusy: state.isBusy,
                             onModeChanged: chat.setMode,
                             onOptions: _changeOptions,
+                            onOutline: state.hasMessages
+                                ? () => _showOutline(docked: canDockOutline)
+                                : null,
+                            outlineOpen: showOutline,
                             onOpenHistory: showSidebar
                                 ? null
                                 : () => _openPage(
-                                    ChatHistoryScreen(openChat: _openChat),
+                                    ChatHistoryScreen(
+                                      openChat: _openChat,
+                                      openBookmark: _openBookmark,
+                                    ),
                                   ),
                             onOpenSettings: showSidebar ? null : _openSettings,
                             onNewChat: showSidebar
@@ -387,6 +484,29 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
+              if (showOutline) ...[
+                const VerticalDivider(width: 1),
+                SizedBox(
+                  width: _outlineWidth,
+                  child: ColoredBox(
+                    color: colors.surfaceContainerLow,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        16,
+                        16,
+                        bottomPadding + 10,
+                      ),
+                      child: ConversationOutline(
+                        key: ValueKey(state.version),
+                        selectedMessageId: _anchor?.messageId,
+                        onJump: _jumpToMessage,
+                        onClose: () => setState(() => _outlineOpen = false),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           );
         },

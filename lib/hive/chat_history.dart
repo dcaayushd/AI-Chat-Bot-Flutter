@@ -54,17 +54,21 @@ class ChatHistory extends HiveObject {
     return value.isEmpty ? 'Conversation' : value;
   }
 
-  ChatHistory withDetails({String? title, bool? isPinned, Map? options}) =>
-      ChatHistory(
-        chatId: chatId,
-        prompt: prompt,
-        response: response,
-        imagesUrls: imagesUrls,
-        timestamp: timestamp,
-        title: title ?? this.title,
-        isPinned: isPinned ?? this.isPinned,
-        transcript: transcript,
-        mode: mode,
-        options: options ?? this.options,
-      );
+  ChatHistory withDetails({
+    String? title,
+    bool? isPinned,
+    Map? options,
+    List<Map>? transcript,
+  }) => ChatHistory(
+    chatId: chatId,
+    prompt: prompt,
+    response: response,
+    imagesUrls: imagesUrls,
+    timestamp: timestamp,
+    title: title ?? this.title,
+    isPinned: isPinned ?? this.isPinned,
+    transcript: transcript ?? this.transcript,
+    mode: mode,
+    options: options ?? this.options,
+  );
 }

@@ -22,6 +22,7 @@ import 'package:chatbotapp/screens/chat_history_screen.dart';
 import 'package:chatbotapp/screens/chat_screen.dart';
 import 'package:chatbotapp/themes/my_theme.dart';
 import 'package:chatbotapp/widgets/bottom_chat_field.dart';
+import 'package:chatbotapp/widgets/chat/conversation_outline.dart';
 
 Widget _app(ChatProvider chat, {ThemeMode themeMode = ThemeMode.light}) {
   return MultiProvider(
@@ -38,6 +39,43 @@ Widget _app(ChatProvider chat, {ThemeMode themeMode = ThemeMode.light}) {
       themeMode: themeMode,
     ),
   );
+}
+
+Future<void> _openWorkspaceStorage() async {
+  final dir = await Directory.systemTemp.createTemp('chat-workspace-');
+  addTearDown(() async {
+    await Hive.close();
+    await dir.delete(recursive: true);
+  });
+  Hive.init(dir.path);
+  if (!Hive.isAdapterRegistered(0)) Hive.registerAdapter(ChatHistoryAdapter());
+  await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
+  await Hive.openLazyBox<Map>(Constants.chatImagesBox);
+  await Hive.openBox<String>(Constants.chatDraftsBox);
+}
+
+Future<void> _tapAndWait(
+  WidgetTester tester,
+  ChatProvider chat,
+  Finder action,
+  bool Function() completed,
+) async {
+  await tester.runAsync(() async {
+    final finished = Completer<void>();
+    void handleAction() {
+      if (completed() && !finished.isCompleted) finished.complete();
+    }
+
+    chat.addListener(handleAction);
+    try {
+      await tester.tap(action);
+      handleAction();
+      await finished.future.timeout(const Duration(seconds: 5));
+    } finally {
+      chat.removeListener(handleAction);
+    }
+  });
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -60,7 +98,7 @@ void main() {
     await tester.tap(find.text('Write a unit test'));
     await tester.pumpAndSettle();
     final composer = tester.widget<TextField>(find.byType(TextField));
-    expect(composer.controller?.text, 'Write a unit test');
+    expect(composer.controller?.text, startsWith('Help me write unit tests.'));
     expect(chat.hasMessages, isFalse);
   });
 
@@ -184,7 +222,9 @@ void main() {
     expect(find.text('Continue reply'), findsOneWidget);
   });
 
-  testWidgets('searches and branches in the wide workspace', (tester) async {
+  testWidgets('searches, branches, and restores drafts in the workspace', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1240, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -212,15 +252,7 @@ void main() {
     );
     addTearDown(chat.dispose);
     await tester.runAsync(() async {
-      final dir = await Directory.systemTemp.createTemp('chat-workspace-');
-      addTearDown(() async {
-        await Hive.close();
-        await dir.delete(recursive: true);
-      });
-      Hive.init(dir.path);
-      Hive.registerAdapter(ChatHistoryAdapter());
-      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
-      await Hive.openLazyBox<Map>(Constants.chatImagesBox);
+      await _openWorkspaceStorage();
       await chat.send('Roadmap');
       await chat.newChat();
       await chat.send('Weekend plans');
@@ -253,25 +285,13 @@ void main() {
     await tester.pumpAndSettle();
 
     final sourceId = chat.currentChatId;
-    await tester.runAsync(() async {
-      final branchOpened = Completer<void>();
-      void handleBranch() {
-        if (chat.currentChatId != sourceId &&
-            !chat.isBusy &&
-            !branchOpened.isCompleted) {
-          branchOpened.complete();
-        }
-      }
-
-      chat.addListener(handleBranch);
-      try {
-        await tester.tap(find.byTooltip('Branch from this reply'));
-        await branchOpened.future.timeout(const Duration(seconds: 5));
-      } finally {
-        chat.removeListener(handleBranch);
-      }
-    });
-    await tester.pumpAndSettle();
+    await _tapAndWait(
+      tester,
+      chat,
+      find.byTooltip('Branch from this reply'),
+      () => chat.currentChatId != sourceId && !chat.isBusy,
+    );
+    final branchId = chat.currentChatId;
     expect(chat.title, 'Branch · Weekend plans');
     expect(historyTitle('Weekend plans'), findsOneWidget);
     expect(historyTitle('Branch · Weekend plans'), findsOneWidget);
@@ -296,11 +316,19 @@ void main() {
       matching: find.byType(TextField),
     );
     await tester.enterText(composer, 'An unsent follow-up');
-    await tester.tap(historyTitle('Weekend plans'));
-    await tester.pumpAndSettle();
-    expect(find.text('The current draft will be discarded.'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
+    await _tapAndWait(
+      tester,
+      chat,
+      historyTitle('Weekend plans'),
+      () => chat.currentChatId == sourceId && !chat.isBusy,
+    );
+    expect(tester.widget<TextField>(composer).controller?.text, isEmpty);
+    await _tapAndWait(
+      tester,
+      chat,
+      historyTitle('Branch · Weekend plans'),
+      () => chat.currentChatId == branchId && !chat.isBusy,
+    );
 
     tester.view.physicalSize = const Size(360, 740);
     await tester.pumpAndSettle();
@@ -311,6 +339,130 @@ void main() {
       'An unsent follow-up',
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('finds a distant message and reopens it from saved replies', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 850);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final chat = ChatProvider(developmentKey: '');
+    addTearDown(chat.dispose);
+    const chatId = 'long-chat';
+    const target = 'Unique orchard result';
+    const targetId = 'message-17';
+    await tester.runAsync(() async {
+      await _openWorkspaceStorage();
+      final time = DateTime.now();
+      final transcript = List.generate(
+        84,
+        (index) => Message(
+          chatId: chatId,
+          messageId: 'message-$index',
+          role: index.isEven ? Role.user : Role.assistant,
+          text: index == 17
+              ? target
+              : 'Notes on phase $index ${'with extra details ' * (index % 6)}',
+          timeSent: time,
+        ).toMap(),
+      );
+      await Hive.box<ChatHistory>(Constants.chatHistoryBox).put(
+        chatId,
+        ChatHistory(
+          chatId: chatId,
+          prompt: 'Project timeline',
+          response: 'Final notes',
+          timestamp: time,
+          imagesUrls: [],
+          transcript: transcript,
+        ),
+      );
+      await chat.openChat(chatId);
+    });
+    await tester.pumpWidget(_app(chat));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Find in conversation'));
+    await tester.pumpAndSettle();
+    final outline = find.byType(ConversationOutline);
+    expect(outline, findsOneWidget);
+    final search = find.descendant(
+      of: outline,
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(search, 'ORCHARD');
+    await tester.pumpAndSettle();
+    expect(find.text('1 match'), findsOneWidget);
+    await tester.tap(find.descendant(of: outline, matching: find.text(target)));
+    await tester.pumpAndSettle();
+    final selected = find.byKey(const ValueKey('selected-message'));
+    expect(
+      find.descendant(of: selected, matching: find.text(target)),
+      findsOneWidget,
+    );
+    final bookmark = find.descendant(
+      of: selected,
+      matching: find.byTooltip('Bookmark reply'),
+    );
+    await _tapAndWait(
+      tester,
+      chat,
+      bookmark,
+      () =>
+          !chat.isBusy &&
+          chat.messages.any(
+            (message) =>
+                message.messageId == targetId && message.bookmarkedAt != null,
+          ),
+    );
+
+    await tester.tap(find.text('Saved replies'));
+    await tester.pumpAndSettle();
+    final saved = find.descendant(
+      of: find.byType(ChatHistoryPanel),
+      matching: find.text(target),
+    );
+    expect(saved, findsOneWidget);
+    await _tapAndWait(
+      tester,
+      chat,
+      find.text('New chat'),
+      () => !chat.isBusy && !chat.hasMessages,
+    );
+    await _tapAndWait(
+      tester,
+      chat,
+      saved,
+      () => !chat.isBusy && chat.currentChatId == chatId,
+    );
+    expect(
+      find.descendant(of: selected, matching: find.text(target)),
+      findsOneWidget,
+    );
+
+    tester.view.physicalSize = const Size(380, 750);
+    await tester.pumpAndSettle();
+    expect(outline, findsNothing);
+    await tester.tap(find.byTooltip('Find in conversation'));
+    await tester.pumpAndSettle();
+    expect(outline, findsOneWidget);
+    await tester.enterText(search, 'phase 70');
+    await tester.pumpAndSettle();
+    final result = find.descendant(
+      of: outline,
+      matching: find.textContaining('Notes on phase 70'),
+    );
+    await tester.tap(result);
+    await tester.pumpAndSettle();
+    expect(outline, findsNothing);
+    expect(
+      find.descendant(
+        of: selected,
+        matching: find.textContaining('Notes on phase 70'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('renders a streaming code block and stops generation', (
@@ -414,8 +566,8 @@ void main() {
     }
 
     await writeParagraphs(32);
-    final list = find.byType(ListView);
-    final scroll = tester.widget<ListView>(list).controller!;
+    final list = find.byType(CustomScrollView);
+    final scroll = tester.widget<CustomScrollView>(list).controller!;
     expect(scroll.position.maxScrollExtent, greaterThan(400));
     expect(scroll.position.extentAfter, closeTo(0, 1));
 

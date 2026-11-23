@@ -4,6 +4,7 @@ import 'dart:collection';
 import 'package:chatbotapp/apis/gemini_client.dart';
 import 'package:chatbotapp/apis/gemini_config.dart';
 import 'package:chatbotapp/apis/gemini_context.dart';
+import 'package:chatbotapp/hive/chat_draft_store.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/chat_repository.dart';
 import 'package:chatbotapp/models/chat_attachment.dart';
@@ -12,6 +13,7 @@ import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/models/chat_options.dart';
 import 'package:chatbotapp/models/message.dart';
+import 'package:chatbotapp/models/reply_bookmark.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/utilities/chat_transcript.dart';
 import 'package:flutter/foundation.dart';
@@ -39,6 +41,7 @@ class ChatProvider extends ChangeNotifier {
   final ChatRepository _repository;
   final bool Function() _shouldSaveHistory;
   final String _developmentKey;
+  late final _drafts = ChatDraftStore(onWriteStatusChanged: _notify);
 
   final List<Message> _messages = [];
   final Map<String, ChatAttachment> _sessionAttachments = {};
@@ -75,6 +78,8 @@ class ChatProvider extends ChangeNotifier {
   bool get historyOff => _sessionOnly || !_shouldSaveHistory();
   bool get canBranch =>
       hasMessages && !isBusy && !historyOff && _storageError == null;
+  String get draftText => historyOff ? '' : _drafts.read(_chatId);
+  bool get draftStorageError => _drafts.hasWriteError;
   String? get generationError => _generationError;
   String? get storageError => _storageError;
   Message? get streamingReply => _reply?.draft;
@@ -88,6 +93,12 @@ class ChatProvider extends ChangeNotifier {
         last.status != ReplyStatus.complete &&
         _messages[_messages.length - 2].role == Role.user;
   }
+
+  void rememberDraft(String text) {
+    if (!historyOff) _drafts.update(_chatId, text);
+  }
+
+  Future<void> flushDrafts() => _drafts.flush();
 
   int get visibleMessageCount {
     final reply = _reply;
@@ -214,6 +225,28 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
+  Future<void> toggleReplyBookmark(String messageId) async {
+    _checkIdle();
+    if (historyOff || _storageError != null) {
+      throw const ChatException('Bookmarks require a saved conversation.');
+    }
+    final index = _messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    if (index == -1 || _messages[index].role != Role.assistant) {
+      throw const ChatException('This reply is no longer available.');
+    }
+    await _changeConversation(() async {
+      final previous = _messages[index];
+      final updated = previous.bookmarkedAt == null
+          ? previous.copyWith(bookmarkedAt: DateTime.now())
+          : previous.copyWith(clearBookmark: true);
+      final snapshot = [..._messages]..[index] = updated;
+      await _repository.updateTranscript(_chatId, snapshot);
+      if (!_disposed) _messages[index] = updated;
+    });
+  }
+
   String _validatePrompt(String text) {
     final prompt = text.trim();
     if (prompt.length > maxPromptLength) {
@@ -272,7 +305,10 @@ class ChatProvider extends ChangeNotifier {
 
     var status = ReplyStatus.complete;
     try {
-      if (savePrompt) await _persist();
+      if (savePrompt) {
+        await _persist();
+        await _drafts.flush();
+      }
       if (!reply.stopped) {
         final tailStart = (prefix.length - _maxContinuationLength).clamp(
           0,
@@ -509,7 +545,11 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> deleteChat(String chatId) => _changeConversation(() async {
     await _repository.delete(chatId);
-    if (_chatId == chatId) _useConversation();
+    try {
+      await _drafts.forget(chatId);
+    } finally {
+      if (_chatId == chatId) _useConversation();
+    }
   }, stopReply: _chatId == chatId);
 
   Future<void> clearAllChats() {
@@ -519,11 +559,15 @@ class ChatProvider extends ChangeNotifier {
     return _changeConversation(() async {
       final hadSavedChat =
           chatId.isNotEmpty && _repository.getChat(chatId) != null;
+      final hadNewDraft = chatId.isEmpty && draftText.isNotEmpty;
       try {
         await _repository.clear();
+        await _drafts.clear();
       } finally {
-        if (hadSavedChat && _repository.getChat(chatId) == null)
+        if (hadNewDraft ||
+            (hadSavedChat && _repository.getChat(chatId) == null)) {
           _useConversation();
+        }
       }
     }, stopReply: activeIsSaved || !historyOff);
   }
@@ -543,6 +587,7 @@ class ChatProvider extends ChangeNotifier {
         stopGeneration();
         await reply.done.future;
       }
+      await _drafts.flush();
       if (!_disposed) await action();
     } finally {
       _changingConversation = false;
@@ -577,6 +622,11 @@ class ChatProvider extends ChangeNotifier {
     String query,
   ) => _repository.search(chats, query);
 
+  List<ReplyBookmark> findBookmarks(
+    Iterable<ChatHistory> chats,
+    String query,
+  ) => _repository.findBookmarks(chats, query);
+
   Future<void> renameChat(String chatId, String title) async {
     await _repository.rename(chatId, title);
     if (_chatId == chatId) {
@@ -607,6 +657,7 @@ class ChatProvider extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _reply?.stop();
+    unawaited(_drafts.flush());
     _gemini.close();
     super.dispose();
   }

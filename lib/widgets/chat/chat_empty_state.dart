@@ -19,7 +19,7 @@ class ChatEmptyState extends StatelessWidget {
   final ValueChanged<String> onSuggestionTap;
   final VoidCallback onConnect;
 
-  static const _maxWidth = 600.0;
+  static const _maxWidth = 640.0;
 
   @override
   Widget build(BuildContext context) {
@@ -52,7 +52,12 @@ class ChatEmptyState extends StatelessWidget {
                         child: Padding(
                           padding: const EdgeInsets.all(13),
                           child: Icon(
-                            Icons.auto_awesome_rounded,
+                            switch (mode) {
+                              ChatMode.general => Icons.auto_awesome_rounded,
+                              ChatMode.writing => Icons.edit_note_rounded,
+                              ChatMode.coding => Icons.code_rounded,
+                              ChatMode.study => Icons.school_outlined,
+                            },
                             color: colors.onPrimaryContainer,
                             size: 27,
                           ),
@@ -75,6 +80,14 @@ class ChatEmptyState extends StatelessWidget {
                           color: colors.onSurfaceVariant,
                         ),
                       ),
+                      if (!apiConfigured) ...[
+                        const SizedBox(height: 16),
+                        FilledButton.tonalIcon(
+                          onPressed: onConnect,
+                          icon: const Icon(Icons.key_outlined, size: 18),
+                          label: const Text('Connect Gemini'),
+                        ),
+                      ],
                       if (showStarterPrompts) ...[
                         const SizedBox(height: 24),
                         Wrap(
@@ -86,18 +99,10 @@ class ChatEmptyState extends StatelessWidget {
                                 width: tileWidth,
                                 child: _PromptTile(
                                   prompt: prompt,
-                                  onTap: () => onSuggestionTap(prompt),
+                                  onTap: () => onSuggestionTap(prompt.draft),
                                 ),
                               ),
                           ],
-                        ),
-                      ],
-                      if (!apiConfigured) ...[
-                        const SizedBox(height: 20),
-                        FilledButton.tonalIcon(
-                          onPressed: onConnect,
-                          icon: const Icon(Icons.key_outlined, size: 18),
-                          label: const Text('Connect Gemini'),
                         ),
                       ],
                     ],
@@ -115,7 +120,7 @@ class ChatEmptyState extends StatelessWidget {
 class _PromptTile extends StatelessWidget {
   const _PromptTile({required this.prompt, required this.onTap});
 
-  final String prompt;
+  final StarterPrompt prompt;
   final VoidCallback onTap;
 
   @override
@@ -132,13 +137,29 @@ class _PromptTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 58),
+          constraints: const BoxConstraints(minHeight: 90),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(prompt, style: theme.textTheme.labelLarge),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(prompt.title, style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 4),
+                      Text(
+                        prompt.description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Icon(Icons.north_west_rounded, color: colors.primary, size: 17),

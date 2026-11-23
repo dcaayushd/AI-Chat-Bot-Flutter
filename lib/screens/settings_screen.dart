@@ -134,7 +134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showAnimatedConfirmationDialog(
       context: context,
       title: 'Clear history',
-      content: 'Delete all chats saved on this device?',
+      content: 'Delete all saved chats, bookmarks, and drafts on this device?',
       actionText: 'Clear',
     );
 

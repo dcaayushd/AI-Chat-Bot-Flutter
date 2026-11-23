@@ -14,6 +14,7 @@ class AssistantMessageWidget extends StatelessWidget {
     this.onBranch,
     this.onContinue,
     this.onRestore,
+    this.onBookmark,
   });
 
   final Message message;
@@ -22,6 +23,7 @@ class AssistantMessageWidget extends StatelessWidget {
   final VoidCallback? onBranch;
   final VoidCallback? onContinue;
   final ValueChanged<ReplyRevision>? onRestore;
+  final VoidCallback? onBookmark;
 
   Future<void> _viewVersions(BuildContext context) async {
     final version = await showDialog<ReplyRevision>(
@@ -144,6 +146,23 @@ class AssistantMessageWidget extends StatelessWidget {
                             tooltip: 'Regenerate reply',
                             onPressed: onRegenerate,
                             icon: const Icon(Icons.refresh_rounded, size: 20),
+                          ),
+                        if (onBookmark != null)
+                          IconButton(
+                            tooltip: message.bookmarkedAt == null
+                                ? 'Bookmark reply'
+                                : 'Remove bookmark',
+                            isSelected: message.bookmarkedAt != null,
+                            onPressed: onBookmark,
+                            icon: const Icon(
+                              Icons.bookmark_border_rounded,
+                              size: 19,
+                            ),
+                            selectedIcon: Icon(
+                              Icons.bookmark_rounded,
+                              color: colors.primary,
+                              size: 19,
+                            ),
                           ),
                         if (message.previousReplies.isNotEmpty)
                           IconButton(

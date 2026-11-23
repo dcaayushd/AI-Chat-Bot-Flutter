@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:chatbotapp/constants/constants.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
+import 'package:chatbotapp/models/reply_bookmark.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/utilities/animated_dialog.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
@@ -17,9 +18,14 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 class ChatHistoryScreen extends StatelessWidget {
-  const ChatHistoryScreen({super.key, required this.openChat});
+  const ChatHistoryScreen({
+    super.key,
+    required this.openChat,
+    required this.openBookmark,
+  });
 
   final Future<bool> Function(String?) openChat;
+  final Future<bool> Function(ReplyBookmark) openBookmark;
 
   @override
   Widget build(BuildContext context) {
@@ -32,20 +38,29 @@ class ChatHistoryScreen extends StatelessWidget {
             Navigator.of(context).pop();
           }
         },
+        onOpenBookmark: (bookmark) async {
+          if (await openBookmark(bookmark) && context.mounted) {
+            Navigator.of(context).pop();
+          }
+        },
       ),
     );
   }
 }
 
+enum _HistorySection { chats, bookmarks }
+
 class ChatHistoryPanel extends StatefulWidget {
   const ChatHistoryPanel({
     super.key,
     required this.onOpenChat,
+    required this.onOpenBookmark,
     this.onBack,
     this.onSettings,
   });
 
   final ValueChanged<String?> onOpenChat;
+  final ValueChanged<ReplyBookmark> onOpenBookmark;
   final VoidCallback? onBack;
   final VoidCallback? onSettings;
 
@@ -55,6 +70,7 @@ class ChatHistoryPanel extends StatefulWidget {
 
 class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
   final _searchController = TextEditingController();
+  _HistorySection _section = _HistorySection.chats;
   late final _history = Boxes.getChatHistory().listenable();
   Timer? _searchDebounce;
   String _query = '';
@@ -93,7 +109,7 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
     final confirmed = await showAnimatedConfirmationDialog(
       context: context,
       title: 'Clear history',
-      content: 'Delete all chats saved on this device?',
+      content: 'Delete all saved chats, bookmarks, and drafts on this device?',
       actionText: 'Clear',
     );
     if (!mounted || !confirmed) return;
@@ -139,6 +155,7 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
     );
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final showingBookmarks = _section == _HistorySection.bookmarks;
 
     return ValueListenableBuilder<Box<ChatHistory>>(
       valueListenable: _history,
@@ -205,14 +222,36 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
               ),
               const SizedBox(height: 16),
             ],
-            if (_isSidebar || chats.isNotEmpty || _query.isNotEmpty) ...[
+            SegmentedButton<_HistorySection>(
+              segments: const [
+                ButtonSegment(
+                  value: _HistorySection.chats,
+                  label: Text('Chats'),
+                ),
+                ButtonSegment(
+                  value: _HistorySection.bookmarks,
+                  label: Text('Saved replies'),
+                ),
+              ],
+              selected: {_section},
+              showSelectedIcon: false,
+              onSelectionChanged: (selection) =>
+                  setState(() => _section = selection.single),
+            ),
+            const SizedBox(height: 12),
+            if (_isSidebar ||
+                chats.isNotEmpty ||
+                _query.isNotEmpty ||
+                showingBookmarks) ...[
               ValueListenableBuilder<TextEditingValue>(
                 valueListenable: _searchController,
                 builder: (context, value, _) => TextField(
                   controller: _searchController,
                   onChanged: _updateQuery,
                   decoration: InputDecoration(
-                    hintText: _isSidebar
+                    hintText: showingBookmarks
+                        ? 'Search saved replies'
+                        : _isSidebar
                         ? 'Search chats'
                         : 'Search titles and messages',
                     isDense: true,
@@ -229,7 +268,7 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
               ),
               const SizedBox(height: 12),
             ],
-            if (_isSidebar && chats.isNotEmpty)
+            if (_isSidebar && chats.isNotEmpty && !showingBookmarks)
               Row(
                 children: [
                   const SizedBox(width: 8),
@@ -249,7 +288,9 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
                 ],
               ),
             Expanded(
-              child: _query.isEmpty || chats.isEmpty
+              child: showingBookmarks
+                  ? _buildBookmarks(provider.findBookmarks(chats, _query))
+                  : _query.isEmpty || chats.isEmpty
                   ? _buildResults(provider, chats, activeChatId)
                   : FutureBuilder<List<ChatHistory>>(
                       future: _search(provider, chats),
@@ -288,6 +329,74 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
               ),
             ],
           ],
+        );
+      },
+    );
+  }
+
+  Widget _buildBookmarks(List<ReplyBookmark> bookmarks) {
+    final theme = Theme.of(context);
+    if (bookmarks.isEmpty) {
+      return Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.bookmark_border_rounded,
+                size: 26,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(height: 10),
+              Text(_query.isEmpty ? 'No saved replies' : 'No matching replies'),
+              if (_query.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'Bookmark a reply to find it here.',
+                    style: theme.textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              else
+                TextButton(
+                  onPressed: _clearSearch,
+                  child: const Text('Clear search'),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.separated(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: const EdgeInsets.only(bottom: 10),
+      itemCount: bookmarks.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 6),
+      itemBuilder: (context, index) {
+        final bookmark = bookmarks[index];
+        final preview = String.fromCharCodes(
+          bookmark.text.trim().runes.take(180),
+        );
+        return Card(
+          child: ListTile(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            leading: Icon(
+              Icons.bookmark_rounded,
+              color: theme.colorScheme.primary,
+              size: 20,
+            ),
+            horizontalTitleGap: 8,
+            title: Text(preview, maxLines: 2, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              bookmark.chatTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            onTap: () => widget.onOpenBookmark(bookmark),
+          ),
         );
       },
     );
