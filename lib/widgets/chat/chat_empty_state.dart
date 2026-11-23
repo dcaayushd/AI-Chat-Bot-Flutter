@@ -1,85 +1,148 @@
-import 'package:cupertino_ui/cupertino_ui.dart';
+import 'dart:math' as math;
+
+import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:chatbotapp/constants/constants.dart';
 
 class ChatEmptyState extends StatelessWidget {
   const ChatEmptyState({
     super.key,
+    required this.mode,
     required this.apiConfigured,
     required this.showStarterPrompts,
     required this.onSuggestionTap,
+    required this.onConnect,
   });
 
+  final ChatMode mode;
   final bool apiConfigured;
   final bool showStarterPrompts;
   final ValueChanged<String> onSuggestionTap;
+  final VoidCallback onConnect;
+
+  static const _maxWidth = 540.0;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = math.min(constraints.maxWidth, _maxWidth) - 8;
+        final textScale = MediaQuery.textScalerOf(context).scale(14);
+        final tileWidth = availableWidth >= 300 && textScale < 23
+            ? (availableWidth - 10) / 2
+            : availableWidth;
 
-    return SingleChildScrollView(
-      child: Column(
-        children: [
-          const SizedBox(height: 44),
-          Text(
-            'How can I help?',
-            style: Theme.of(context).textTheme.headlineSmall,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Start with a prompt below',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-            textAlign: TextAlign.center,
-          ),
-          if (showStarterPrompts) ...[
-            const SizedBox(height: 20),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 8,
-              runSpacing: 8,
-              children: Constants.starterPrompts
-                  .map(
-                    (prompt) => ActionChip(
-                      avatar: const Icon(CupertinoIcons.sparkles, size: 14),
-                      label: Text(prompt),
-                      onPressed: () => onSuggestionTap(prompt),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ],
-          if (!apiConfigured) ...[
-            const SizedBox(height: 18),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: colorScheme.secondaryContainer,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    CupertinoIcons.exclamationmark_triangle,
-                    size: 16,
-                    color: colorScheme.onSecondaryContainer,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Set API_KEY to start',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: colorScheme.onSecondaryContainer,
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _maxWidth),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 26),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(23),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              colors.primaryContainer,
+                              colors.secondaryContainer
+                            ],
+                          ),
+                          border: Border.all(color: colors.outlineVariant),
                         ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(17),
+                          child: Icon(Icons.auto_awesome_rounded,
+                              color: colors.onPrimaryContainer, size: 30),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Text(
+                        'How can I help?',
+                        style: theme.textTheme.headlineMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        mode.description,
+                        style: theme.textTheme.bodyLarge
+                            ?.copyWith(color: colors.onSurfaceVariant),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (showStarterPrompts) ...[
+                        const SizedBox(height: 22),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            for (final prompt in mode.prompts)
+                              SizedBox(
+                                width: tileWidth,
+                                child: _PromptTile(
+                                    prompt: prompt,
+                                    onTap: () => onSuggestionTap(prompt)),
+                              ),
+                          ],
+                        ),
+                      ],
+                      if (!apiConfigured) ...[
+                        const SizedBox(height: 18),
+                        TextButton.icon(
+                          onPressed: onConnect,
+                          icon: const Icon(Icons.key_outlined, size: 18),
+                          label: const Text('Connect Gemini'),
+                        ),
+                      ],
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
-          ],
-        ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PromptTile extends StatelessWidget {
+  const _PromptTile({required this.prompt, required this.onTap});
+
+  final String prompt;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Material(
+      color: colors.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+          child: Row(
+            children: [
+              Expanded(child: Text(prompt, style: theme.textTheme.labelLarge)),
+              const SizedBox(width: 4),
+              Icon(Icons.north_west_rounded, color: colors.primary, size: 16),
+            ],
+          ),
+        ),
       ),
     );
   }

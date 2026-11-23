@@ -1,69 +1,52 @@
-import 'package:cupertino_ui/cupertino_ui.dart';
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
-import 'package:chatbotapp/utilities/animated_dialog.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
+import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
-enum _HistoryAction {
-  copyPrompt,
-  deleteChat,
-}
+enum _HistoryAction { rename, pin, copy, delete }
 
 class ChatHistoryWidget extends StatelessWidget {
   const ChatHistoryWidget({
     super.key,
     required this.chat,
+    required this.onOpen,
+    required this.onDelete,
   });
 
   final ChatHistory chat;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final date = MaterialLocalizations.of(context)
+        .formatShortDate(chat.timestamp.toLocal());
 
     return Card(
+      semanticContainer: false,
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () async {
-          final chatProvider = context.read<ChatProvider>();
-          await chatProvider.prepareChatRoom(
-            isNewChat: false,
-            chatID: chat.chatId,
-          );
-          if (context.mounted) {
-            Navigator.of(context).pop();
-          }
-        },
-        onLongPress: () => _confirmDelete(context),
+        onTap: onOpen,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+          padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: chat.imagesUrls.isEmpty
-                      ? (isDark
-                          ? colorScheme.primaryContainer.withValues(alpha: 0.78)
-                          : colorScheme.primaryContainer)
-                      : colorScheme.primaryContainer.withValues(alpha: 0.78),
-                  borderRadius: BorderRadius.circular(13),
-                ),
-                alignment: Alignment.center,
+              CircleAvatar(
+                backgroundColor: colors.primaryContainer,
+                foregroundColor: colors.onPrimaryContainer,
                 child: Icon(
-                  chat.imagesUrls.isEmpty
-                      ? CupertinoIcons.chat_bubble_2
-                      : CupertinoIcons.photo_on_rectangle,
-                  size: 17,
-                  color: chat.imagesUrls.isEmpty
-                      ? colorScheme.onPrimaryContainer
-                      : colorScheme.onSecondaryContainer,
+                  chat.isPinned
+                      ? Icons.push_pin_rounded
+                      : chat.imagesUrls.isEmpty
+                      ? Icons.chat_bubble_outline_rounded
+                      : Icons.photo_library_outlined,
+                  size: 19,
                 ),
               ),
               const SizedBox(width: 12),
@@ -72,40 +55,50 @@ class ChatHistoryWidget extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      chat.prompt,
+                      chat.displayTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      style: theme.textTheme.titleMedium,
                     ),
                     const SizedBox(height: 4),
                     Text(
                       chat.response,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                    if (chat.imagesUrls.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        '${chat.imagesUrls.length} image${chat.imagesUrls.length == 1 ? '' : 's'}',
-                        style:
-                            Theme.of(context).textTheme.labelMedium?.copyWith(
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: colors.onSurfaceVariant,
                       ),
-                    ],
+                    ),
+                    const SizedBox(height: 7),
+                    Text(date, style: theme.textTheme.labelMedium),
                   ],
                 ),
               ),
-              CupertinoButton(
-                padding: EdgeInsets.zero,
-                onPressed: () => _showActions(context),
-                child: Icon(
-                  CupertinoIcons.ellipsis_circle,
-                  color: colorScheme.onSurfaceVariant,
-                ),
+              PopupMenuButton<_HistoryAction>(
+                tooltip: 'Conversation actions',
+                onSelected: (action) => _handleAction(context, action),
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: _HistoryAction.rename,
+                    child: Text('Rename'),
+                  ),
+                  PopupMenuItem(
+                    value: _HistoryAction.pin,
+                    child: Text(chat.isPinned ? 'Unpin' : 'Pin'),
+                  ),
+                  const PopupMenuItem(
+                    value: _HistoryAction.copy,
+                    child: Text('Copy as Markdown'),
+                  ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: _HistoryAction.delete,
+                    child: Text(
+                      'Delete chat',
+                      style: TextStyle(color: colors.error),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -114,51 +107,87 @@ class ChatHistoryWidget extends StatelessWidget {
     );
   }
 
-  Future<void> _showActions(BuildContext context) async {
-    final action = await showAdaptiveActionSheet<_HistoryAction>(
-      context: context,
-      title: chat.prompt,
-      actions: const [
-        AdaptiveSheetAction(
-          label: 'Copy prompt',
-          value: _HistoryAction.copyPrompt,
+  Future<void> _handleAction(
+    BuildContext context,
+    _HistoryAction action,
+  ) async {
+    final provider = context.read<ChatProvider>();
+    try {
+      switch (action) {
+        case _HistoryAction.rename:
+          final title = await showDialog<String>(
+            context: context,
+            builder: (context) => _RenameChatDialog(title: chat.displayTitle),
+          );
+          if (title != null) await provider.renameChat(chat.chatId, title);
+        case _HistoryAction.pin:
+          await provider.togglePin(chat.chatId);
+        case _HistoryAction.copy:
+          final transcript = await provider.exportSavedChat(chat);
+          await Clipboard.setData(ClipboardData(text: transcript));
+          if (context.mounted) {
+            showAppSnackBar(context, 'Conversation copied as Markdown');
+          }
+        case _HistoryAction.delete:
+          onDelete();
+      }
+    } catch (error) {
+      if (context.mounted) showAppSnackBar(context, formatChatError(error));
+    }
+  }
+}
+
+class _RenameChatDialog extends StatefulWidget {
+  const _RenameChatDialog({required this.title});
+
+  final String title;
+
+  @override
+  State<_RenameChatDialog> createState() => _RenameChatDialogState();
+}
+
+class _RenameChatDialogState extends State<_RenameChatDialog> {
+  static const _maxLength = 80;
+  late final _controller = TextEditingController(
+    text: String.fromCharCodes(widget.title.runes.take(_maxLength)),
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final title = _controller.text.trim();
+    if (title.isNotEmpty) Navigator.of(context).pop(title);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rename conversation'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: _maxLength,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(labelText: 'Name'),
+        onSubmitted: (_) => _save(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
         ),
-        AdaptiveSheetAction(
-          label: 'Delete chat',
-          value: _HistoryAction.deleteChat,
-          isDestructive: true,
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _controller,
+          builder: (context, value, child) => FilledButton(
+            onPressed: value.text.trim().isEmpty ? null : _save,
+            child: const Text('Save name'),
+          ),
         ),
       ],
     );
-
-    if (action == _HistoryAction.copyPrompt) {
-      await Clipboard.setData(ClipboardData(text: chat.prompt));
-      if (context.mounted) {
-        showAppSnackBar(context, 'Prompt copied');
-      }
-      return;
-    }
-
-    if (action == _HistoryAction.deleteChat && context.mounted) {
-      await _confirmDelete(context);
-    }
-  }
-
-  Future<void> _confirmDelete(BuildContext context) async {
-    final chatProvider = context.read<ChatProvider>();
-
-    final confirmed = await showAnimatedConfirmationDialog(
-      context: context,
-      title: 'Delete chat',
-      content: 'Remove this chat?',
-      actionText: 'Delete',
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    await chatProvider.deleteChatMessages(chatId: chat.chatId);
-    await chat.delete();
   }
 }

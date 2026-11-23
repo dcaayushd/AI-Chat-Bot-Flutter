@@ -1,79 +1,82 @@
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:chatbotapp/utilities/assets_manager.dart';
 
 class ProfileAvatar extends StatelessWidget {
   const ProfileAvatar({
     super.key,
     required this.name,
-    required this.imagePath,
+    this.photo,
+    this.onPickPhoto,
     this.radius = 24,
   });
 
   final String name;
-  final String imagePath;
+  final Uint8List? photo;
+  final VoidCallback? onPickPhoto;
   final double radius;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final imageProvider = _imageProvider();
-    final initials = _initials();
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final bytes = photo;
+    final placeholder = Center(
+      child: Text(_initials(), style: theme.textTheme.titleMedium),
+    );
 
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: [
-            colorScheme.primary,
-            colorScheme.secondary,
-          ],
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(2),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              colors: [colors.primary, colors.secondary],
+            ),
+          ),
+          child: ClipOval(
+            child: ColoredBox(
+              color: colors.surfaceContainerHighest,
+              child: SizedBox.square(
+                dimension: radius * 2,
+                child: bytes == null
+                    ? placeholder
+                    : Image.memory(
+                        bytes,
+                        fit: BoxFit.cover,
+                        cacheWidth: (radius * 6).round(),
+                        semanticLabel: 'Profile photo',
+                        errorBuilder: (_, __, ___) => placeholder,
+                      ),
+              ),
+            ),
+          ),
         ),
-      ),
-      child: CircleAvatar(
-        radius: radius,
-        backgroundColor: colorScheme.surfaceContainerHighest,
-        backgroundImage: imageProvider,
-        child: imageProvider == null
-            ? Text(
-                initials,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: colorScheme.onSurface,
-                      fontWeight: FontWeight.w700,
-                    ),
-              )
-            : null,
-      ),
+        if (onPickPhoto != null)
+          Positioned(
+            bottom: -4,
+            right: -4,
+            child: IconButton.filledTonal(
+              tooltip: 'Choose profile photo',
+              onPressed: onPickPhoto,
+              icon: const Icon(Icons.photo_camera_outlined, size: 18),
+            ),
+          ),
+      ],
     );
   }
 
-  ImageProvider<Object>? _imageProvider() {
-    final normalizedPath = imagePath.trim();
-    if (normalizedPath.isNotEmpty) {
-      final imageFile = File(normalizedPath);
-      if (imageFile.existsSync()) {
-        return FileImage(imageFile);
-      }
-    }
-
-    if (name.trim().isEmpty) {
-      return const AssetImage(AssetsMenager.userIcon);
-    }
-
-    return null;
-  }
-
   String _initials() {
-    final parts =
-        name.trim().split(' ').where((part) => part.isNotEmpty).toList();
-    if (parts.isEmpty) {
-      return 'Y';
-    }
-    if (parts.length == 1) {
-      return parts.first[0].toUpperCase();
-    }
-    return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+    final words = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty);
+    if (words.isEmpty) return 'Y';
+    final first = String.fromCharCode(words.first.runes.first);
+    if (words.length == 1) return first.toUpperCase();
+    final last = String.fromCharCode(words.last.runes.first);
+    return (first + last).toUpperCase();
   }
 }

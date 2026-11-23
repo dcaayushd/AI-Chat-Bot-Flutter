@@ -10,61 +10,64 @@ class VoiceInputProvider extends ChangeNotifier {
 
   bool _isAvailable = false;
   bool _isListening = false;
-  bool _initialized = false;
+  bool _starting = false;
+  bool _disposed = false;
+  int _attempt = 0;
   String _transcript = '';
   String _error = '';
-  double _soundLevel = 0;
 
   bool get isAvailable => _isAvailable;
   bool get isListening => _isListening;
-  bool get initialized => _initialized;
+  bool get isStarting => _starting;
   String get transcript => _transcript;
   String get error => _error;
-  double get soundLevel => _soundLevel;
 
-  Future<void> ensureInitialized() async {
-    if (_initialized) {
-      return;
-    }
+  Future<void> _ensureInitialized() async {
+    if (_isAvailable) return;
 
     try {
       _isAvailable = await _speech.initialize(
         onStatus: _handleStatus,
         onError: _handleError,
-        debugLogging: kDebugMode,
+        options: [SpeechToText.androidNoBluetooth],
       );
     } catch (_) {
       _isAvailable = false;
     }
 
-    _initialized = true;
-    notifyListeners();
+    _notify();
   }
 
   Future<void> startListening() async {
-    await ensureInitialized();
-    if (!_isAvailable || _isListening) {
-      return;
+    if (_starting || _isListening || _disposed) return;
+    final attempt = ++_attempt;
+    _starting = true;
+    _notify();
+    try {
+      await _ensureInitialized();
+      if (!_isAvailable || _disposed || attempt != _attempt) return;
+
+      await _speech.listen(
+        onResult: (result) {
+          if (attempt == _attempt) _handleResult(result);
+        },
+        listenOptions: SpeechListenOptions(
+          listenFor: const Duration(seconds: 45),
+          pauseFor: const Duration(seconds: 4),
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+        ),
+      );
+      if (_disposed || attempt != _attempt) {
+        await cancelListening();
+        return;
+      }
+      _isListening = _speech.isListening;
+    } finally {
+      _starting = false;
+      _notify();
     }
-
-    _error = '';
-    _transcript = '';
-    _soundLevel = 0;
-
-    await _speech.listen(
-      onResult: _handleResult,
-      listenFor: const Duration(seconds: 45),
-      pauseFor: const Duration(seconds: 4),
-      onSoundLevelChange: _handleSoundLevel,
-      listenOptions: SpeechListenOptions(
-        partialResults: true,
-        cancelOnError: true,
-        listenMode: ListenMode.dictation,
-      ),
-    );
-
-    _isListening = true;
-    notifyListeners();
   }
 
   Future<void> stopListening() async {
@@ -74,50 +77,53 @@ class VoiceInputProvider extends ChangeNotifier {
 
     await _speech.stop();
     _isListening = false;
-    notifyListeners();
+    _notify();
   }
 
   Future<void> cancelListening() async {
-    if (_isListening) {
-      await _speech.cancel();
+    _attempt++;
+    try {
+      if (_isListening || _speech.isListening) await _speech.cancel();
+    } catch (_) {
+      _error = 'Could not stop dictation.';
+    } finally {
+      _isListening = false;
+      _transcript = '';
+      _notify();
     }
-    _isListening = false;
-    _transcript = '';
-    _soundLevel = 0;
-    notifyListeners();
   }
 
   void clearTranscript() {
     _transcript = '';
     _error = '';
-    _soundLevel = 0;
-    notifyListeners();
+    _notify();
   }
 
   void _handleStatus(String status) {
-    final isActive = status == 'listening';
-    if (!isActive) {
-      _soundLevel = 0;
-    }
-    _isListening = isActive;
-    notifyListeners();
+    _isListening = status == SpeechToText.listeningStatus;
+    _notify();
   }
 
   void _handleResult(SpeechRecognitionResult result) {
     _transcript = result.recognizedWords;
-    notifyListeners();
+    _notify();
   }
 
   void _handleError(SpeechRecognitionError error) {
     _error = _mapError(error.errorMsg);
     _isListening = false;
-    _soundLevel = 0;
-    notifyListeners();
+    _notify();
   }
 
-  void _handleSoundLevel(double level) {
-    _soundLevel = level;
-    notifyListeners();
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    if (_isListening || _starting) unawaited(cancelListening());
+    super.dispose();
   }
 
   String _mapError(String error) {

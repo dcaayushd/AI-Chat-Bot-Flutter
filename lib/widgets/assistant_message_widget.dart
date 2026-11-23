@@ -1,90 +1,114 @@
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
-import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/widgets/chat/assistant_response_content.dart';
+import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
 
 class AssistantMessageWidget extends StatelessWidget {
   const AssistantMessageWidget({
     super.key,
     required this.message,
+    required this.streaming,
+    this.onRegenerate,
   });
 
   final Message message;
+  final bool streaming;
+  final VoidCallback? onRegenerate;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final text = message.message.toString();
-    final hasCodeBlocks = AssistantResponseContent.containsCodeBlocks(text);
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final status = streaming
+        ? (message.text.isEmpty ? 'Thinking…' : 'Writing…')
+        : switch (message.status) {
+            ReplyStatus.complete => null,
+            ReplyStatus.stopped => 'Generation stopped',
+            ReplyStatus.interrupted => 'Reply interrupted',
+            ReplyStatus.truncated => 'Reply reached its length limit',
+          };
 
     return Align(
       alignment: Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.94,
-        ),
-        child: Container(
+      child: Padding(
+        padding: const EdgeInsets.only(right: 12, bottom: 12),
+        child: DecoratedBox(
           decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerLow.withValues(alpha: 0.82),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-            ),
+            color: colors.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: colors.outlineVariant),
           ),
-          padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-          margin: const EdgeInsets.only(bottom: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 26,
-                    height: 26,
-                    decoration: BoxDecoration(
-                      color: colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(9),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 14,
+                      backgroundColor: colors.primaryContainer,
+                      foregroundColor: colors.onPrimaryContainer,
+                      child: const Icon(Icons.auto_awesome_outlined, size: 15),
                     ),
-                    child: Icon(
-                      CupertinoIcons.sparkles,
-                      size: 13,
-                      color: colorScheme.onPrimaryContainer,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'AI',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w700,
+                    const SizedBox(width: 9),
+                    Text('Gemini', style: theme.textTheme.labelLarge),
+                    if (status != null) ...[
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            status,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
                         ),
-                  ),
-                  const Spacer(),
-                  if (text.isNotEmpty && !hasCodeBlocks)
-                    IconButton(
-                      tooltip: 'Copy',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        await Clipboard.setData(ClipboardData(text: text));
-                        if (context.mounted) {
-                          showAppSnackBar(context, 'Copied', bottomOffset: 132);
-                        }
-                      },
-                      icon: const Icon(CupertinoIcons.doc_on_doc, size: 18),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (message.text.isNotEmpty)
+                  AssistantResponseContent(text: message.text)
+                else if (streaming)
+                  ExcludeSemantics(
+                    child: LinearProgressIndicator(
+                      minHeight: 2,
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              if (text.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 4),
-                  child: CupertinoActivityIndicator(),
-                )
-              else
-                AssistantResponseContent(text: text),
-            ],
+                  ),
+                if (!streaming && message.text.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Wrap(
+                      children: [
+                        IconButton(
+                          tooltip: 'Copy reply',
+                          onPressed: () async {
+                            await Clipboard.setData(
+                                ClipboardData(text: message.text));
+                            if (context.mounted) {
+                              showAppSnackBar(context, 'Reply copied',
+                                  bottomOffset: 78);
+                            }
+                          },
+                          icon:
+                              const Icon(Icons.content_copy_rounded, size: 18),
+                        ),
+                        if (onRegenerate != null)
+                          IconButton(
+                            tooltip: 'Regenerate reply',
+                            onPressed: onRegenerate,
+                            icon: const Icon(Icons.refresh_rounded, size: 20),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

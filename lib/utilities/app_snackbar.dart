@@ -6,9 +6,6 @@ void showAppSnackBar(
   double bottomOffset = 24,
 }) {
   final messenger = ScaffoldMessenger.of(context);
-  final mediaQuery = MediaQuery.maybeOf(context);
-  final bottomInset = mediaQuery?.viewInsets.bottom ?? 0;
-  final bottomPadding = mediaQuery?.viewPadding.bottom ?? 0;
 
   messenger
     ..hideCurrentSnackBar()
@@ -20,7 +17,7 @@ void showAppSnackBar(
           16,
           0,
           16,
-          bottomInset + bottomPadding + bottomOffset,
+          bottomOffset,
         ),
       ),
     );

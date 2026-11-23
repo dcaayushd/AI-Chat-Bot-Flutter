@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:hive_flutter/hive_flutter.dart';
 
 part 'user_model.g.dart';
@@ -13,10 +15,13 @@ class UserModel extends HiveObject {
   @HiveField(2)
   final String image;
 
-  // constructor
+  @HiveField(3)
+  final Uint8List? avatarBytes;
+
   UserModel({
     required this.uid,
     required this.name,
-    required this.image,
+    this.image = '',
+    this.avatarBytes,
   });
 }

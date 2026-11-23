@@ -17,10 +17,12 @@ class AppScreenScaffold extends StatelessWidget {
     super.key,
     required this.child,
     this.padding = EdgeInsets.zero,
+    this.maxContentWidth = 760,
   });
 
   final Widget child;
   final EdgeInsetsGeometry padding;
+  final double maxContentWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -31,9 +33,15 @@ class AppScreenScaffold extends StatelessWidget {
         child: AppGradientBackground(
           child: SafeArea(
             bottom: false,
-            child: Padding(
-              padding: padding,
-              child: child,
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxContentWidth),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Padding(padding: padding, child: child),
+                ),
+              ),
             ),
           ),
         ),

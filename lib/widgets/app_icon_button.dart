@@ -18,27 +18,26 @@ class AppIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Tooltip(
-      message: tooltip ?? '',
-      child: Opacity(
-        opacity: isEnabled ? 1 : 0.42,
-        child: IconButton(
-          onPressed: isEnabled ? onTap : null,
-          style: IconButton.styleFrom(
-            backgroundColor: colorScheme.primaryContainer.withValues(
-              alpha:
-                  Theme.of(context).brightness == Brightness.dark ? 0.62 : 0.78,
-            ),
-            foregroundColor: colorScheme.onPrimaryContainer,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
-              side: BorderSide(
-                color: colorScheme.outlineVariant.withValues(alpha: 0.72),
-              ),
+    return Opacity(
+      opacity: isEnabled ? 1 : 0.42,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: isEnabled ? onTap : null,
+        style: IconButton.styleFrom(
+          backgroundColor: colorScheme.primaryContainer.withValues(
+            alpha: Theme.of(context).brightness == Brightness.dark
+                ? 0.62
+                : 0.78,
+          ),
+          foregroundColor: colorScheme.onPrimaryContainer,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(
+              color: colorScheme.outlineVariant.withValues(alpha: 0.72),
             ),
           ),
-          icon: Icon(icon, size: 20),
         ),
+        icon: Icon(icon, size: 20),
       ),
     );
   }

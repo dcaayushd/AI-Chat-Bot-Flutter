@@ -1,515 +1,476 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:typed_data';
-import 'package:material_ui/material_ui.dart';
-import 'package:chatbotapp/apis/api_service.dart';
-import 'package:chatbotapp/constants/constants.dart';
-import 'package:chatbotapp/hive/boxes.dart';
+import 'dart:collection';
+
+import 'package:chatbotapp/apis/gemini_client.dart';
+import 'package:chatbotapp/apis/gemini_config.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
-import 'package:chatbotapp/hive/settings.dart';
-import 'package:chatbotapp/hive/user_model.dart';
+import 'package:chatbotapp/hive/chat_repository.dart';
+import 'package:chatbotapp/models/chat_image.dart';
+import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:path_provider/path_provider.dart' as path;
-import 'package:image_picker/image_picker.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:chatbotapp/utilities/chat_transcript.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 class ChatProvider extends ChangeNotifier {
-  static const _requestTimeout = Duration(seconds: 40);
+  ChatProvider({
+    GeminiClient? gemini,
+    ChatRepository? repository,
+    bool Function()? shouldSaveHistory,
+    String? developmentKey,
+  }) : _gemini = gemini ?? GeminiClient(),
+       _repository = repository ?? ChatRepository(),
+       _shouldSaveHistory = shouldSaveHistory ?? _alwaysSave,
+       _developmentKey = developmentKey == null
+           ? GeminiConfig.developmentKey
+           : (GeminiConfig.normalizeKey(developmentKey) ?? '');
 
-  final List<Message> _inChatMessages = [];
-  List<XFile>? _imagesFileList = [];
-  String _currentChatId = '';
-  GenerativeModel? _model;
-  GenerativeModel? _textModel;
-  GenerativeModel? _visionModel;
-  String _modelType = Constants.geminiTextModel;
-  bool _isLoading = false;
+  static const maxPromptLength = 24000;
+  static const _maxContextLength = 80000;
+  static const _maxContextMessages = 24;
+  static const _streamUpdateInterval = Duration(milliseconds: 50);
+  static const _uuid = Uuid();
 
-  List<Message> get inChatMessages => _inChatMessages;
-  List<XFile>? get imagesFileList => _imagesFileList;
-  String get currentChatId => _currentChatId;
-  GenerativeModel? get model => _model;
-  GenerativeModel? get textModel => _textModel;
-  GenerativeModel? get visionModel => _visionModel;
-  String get modelType => _modelType;
-  bool get isLoading => _isLoading;
-  bool get hasMessages => _inChatMessages.isNotEmpty;
+  final GeminiClient _gemini;
+  final ChatRepository _repository;
+  final bool Function() _shouldSaveHistory;
+  final String _developmentKey;
 
-  int get messageCount => _inChatMessages.length;
+  final List<Message> _messages = [];
+  final Map<String, ChatImage> _sessionImages = {};
+  _Reply? _reply;
+  String _sessionKey = '';
+  String _chatId = '';
+  String? _generationError;
+  String? _storageError;
+  ChatMode _mode = ChatMode.general;
+  int _conversationVersion = 0;
+  bool _changingConversation = false;
+  bool _sessionOnly = false;
+  bool _disposed = false;
 
-  Future<void> setInChatMessages({required String chatId}) async {
-    final messagesFromDB = await loadMessagesFromDB(chatId: chatId);
-    _inChatMessages
-      ..clear()
-      ..addAll(messagesFromDB);
-    notifyListeners();
+  static bool _alwaysSave() => true;
+
+  String get model => _gemini.model;
+  String get _apiKey => _sessionKey.isEmpty ? _developmentKey : _sessionKey;
+  bool get isConfigured => _apiKey.isNotEmpty;
+  bool get hasSessionKey => _sessionKey.isNotEmpty;
+  ChatMode get mode => _mode;
+  String get currentChatId => _chatId;
+  int get conversationVersion => _conversationVersion;
+  bool get hasMessages => _messages.isNotEmpty;
+  bool get isBusy => _reply != null || _changingConversation;
+  bool get isGenerating => _reply != null;
+  bool get canStop => _reply?.canStop ?? false;
+  bool get historyOff => _sessionOnly || !_shouldSaveHistory();
+  String? get generationError => _generationError;
+  String? get storageError => _storageError;
+  Message? get streamingReply => _reply?.draft;
+  List<Message> get messages => UnmodifiableListView(_messages);
+  bool get hasUnansweredPrompt =>
+      !isBusy && _messages.lastOrNull?.role == Role.user;
+
+  int get visibleMessageCount {
+    final reply = _reply;
+    return reply?.draft != null && reply?.previousAnswer == null
+        ? _messages.length + 1
+        : _messages.length;
   }
 
-  Future<List<Message>> loadMessagesFromDB({required String chatId}) async {
-    await Hive.openBox('${Constants.chatMessagesBox}$chatId');
-    final messageBox = Hive.box('${Constants.chatMessagesBox}$chatId');
-    final newData = messageBox.keys.map((e) {
-      final message = messageBox.get(e);
-      return Message.fromMap(Map<String, dynamic>.from(message));
-    }).toList();
-    return newData;
+  Message visibleMessageAt(int index) {
+    final draft = streamingReply;
+    if (draft != null && index == visibleMessageCount - 1) return draft;
+    return _messages[index];
   }
 
-  void setImagesFileList({required List<XFile> listValue}) {
-    _imagesFileList = listValue;
-    notifyListeners();
-  }
-
-  void removeImageAt(int index) {
-    if (_imagesFileList == null || index >= _imagesFileList!.length) {
-      return;
+  void setSessionKey(String key) {
+    final value = GeminiConfig.normalizeKey(key);
+    if (value == null && key.trim().isNotEmpty) {
+      throw const ChatException('Enter a valid Gemini API key.');
     }
-    final updated = List<XFile>.from(_imagesFileList!)..removeAt(index);
-    _imagesFileList = updated;
-    notifyListeners();
+    _sessionKey = value ?? '';
+    _notify();
   }
 
-  void clearDraft() {
-    _imagesFileList = [];
-    notifyListeners();
+  void setMode(ChatMode mode) {
+    if (isBusy || _mode == mode) return;
+    _mode = mode;
+    _notify();
   }
 
-  String setCurrentModel({required String newModel}) {
-    _modelType = newModel;
-    notifyListeners();
-    return newModel;
-  }
-
-  Future<void> setModel({required bool isTextOnly}) async {
-    final modelName =
-        isTextOnly ? Constants.geminiTextModel : Constants.geminiVisionModel;
-    setCurrentModel(newModel: modelName);
-    final generationConfig = GenerationConfig(
-      temperature: isTextOnly ? 0.45 : 0.35,
-      topP: 0.9,
-      topK: 32,
-      maxOutputTokens: 2048,
-    );
-    final systemInstruction = Content.system(
-      Constants.assistantSystemInstruction,
-    );
-
-    if (isTextOnly) {
-      _textModel ??= GenerativeModel(
-        model: modelName,
-        apiKey: ApiService.apiKey,
-        generationConfig: generationConfig,
-        systemInstruction: systemInstruction,
+  Future<void> send(String text, {List<ChatImage> images = const []}) async {
+    _checkReady();
+    final prompt = text.trim();
+    if (prompt.isEmpty && images.isEmpty) return;
+    if (prompt.length > maxPromptLength) {
+      throw const ChatException('Keep your message under 24,000 characters.');
+    }
+    if (images.length > ChatImage.maxCount ||
+        images.fold(0, (total, image) => total + image.bytes.length) >
+            ChatImage.maxRequestBytes) {
+      throw const ChatException(
+        'Attach up to 4 images totaling 10 MB or less.',
       );
-      _model = _textModel;
-    } else {
-      _visionModel ??= GenerativeModel(
-        model: modelName,
-        apiKey: ApiService.apiKey,
-        generationConfig: generationConfig,
-        systemInstruction: systemInstruction,
+    }
+
+    if (_chatId.isEmpty) _chatId = _uuid.v4();
+    final imageKeys = <String>[];
+    for (final image in images) {
+      final key = _repository.imageKey(_chatId, _uuid.v4());
+      _sessionImages[key] = image;
+      imageKeys.add(key);
+    }
+    _messages.add(
+      Message(
+        messageId: _uuid.v4(),
+        chatId: _chatId,
+        role: Role.user,
+        text: prompt.isEmpty ? 'Describe the attached images.' : prompt,
+        imagesUrls: imageKeys,
+        timeSent: DateTime.now(),
+      ),
+    );
+    await _generate(_messages.length - 1, savePrompt: true);
+  }
+
+  Future<void> retryLastReply() async {
+    _checkReady();
+    final index = _messages.lastIndexWhere(
+      (message) => message.role == Role.user,
+    );
+    if (index == -1) return;
+    await _generate(index, savePrompt: false);
+  }
+
+  void _checkReady() {
+    if (isBusy) {
+      throw const ChatException('Wait for the current chat action to finish.');
+    }
+    if (!isConfigured) {
+      throw const ChatException(
+        'Set API_KEY in .env for local development or add a session key in Settings.',
       );
-      _model = _visionModel;
-    }
-    notifyListeners();
-  }
-
-  void setCurrentChatId({required String newChatId}) {
-    _currentChatId = newChatId;
-    notifyListeners();
-  }
-
-  void setLoading({required bool value}) {
-    _isLoading = value;
-    notifyListeners();
-  }
-
-  Future<void> deleteChatMessages({required String chatId}) async {
-    final storedImagePaths = await _storedImagePathsForChat(chatId: chatId);
-    await _deleteImageFiles(storedImagePaths);
-
-    if (!Hive.isBoxOpen('${Constants.chatMessagesBox}$chatId')) {
-      await Hive.openBox('${Constants.chatMessagesBox}$chatId');
-      await Hive.box('${Constants.chatMessagesBox}$chatId').clear();
-      await Hive.box('${Constants.chatMessagesBox}$chatId').close();
-    } else {
-      await Hive.box('${Constants.chatMessagesBox}$chatId').clear();
-      await Hive.box('${Constants.chatMessagesBox}$chatId').close();
-    }
-
-    if (currentChatId.isNotEmpty) {
-      if (currentChatId == chatId) {
-        setCurrentChatId(newChatId: '');
-        _inChatMessages.clear();
-        notifyListeners();
-      }
     }
   }
 
-  Future<void> clearAllChats() async {
-    final historyBox = Boxes.getChatHistory();
-    final chatIds = historyBox.keys.cast<String>().toList(growable: false);
+  Future<void> _generate(int promptIndex, {required bool savePrompt}) async {
+    final answerIndex = promptIndex + 1;
+    final previous = answerIndex < _messages.length
+        ? _messages[answerIndex]
+        : null;
+    final reply = _Reply(
+      draft: Message(
+        messageId: _uuid.v4(),
+        chatId: _chatId,
+        role: Role.assistant,
+        text: '',
+        timeSent: DateTime.now(),
+      ),
+      previousAnswer: previous,
+    );
+    _reply = reply;
+    _generationError = null;
+    if (historyOff) _sessionOnly = true;
+    final key = _apiKey;
+    final mode = _mode;
+    _notify();
 
-    for (final chatId in chatIds) {
-      await deleteChatMessages(chatId: chatId);
-    }
-
-    await historyBox.clear();
-    _inChatMessages.clear();
-    _currentChatId = '';
-    notifyListeners();
-  }
-
-  Future<void> prepareChatRoom({
-    required bool isNewChat,
-    required String chatID,
-  }) async {
-    if (!isNewChat) {
-      final chatHistory = await loadMessagesFromDB(chatId: chatID);
-      _inChatMessages.clear();
-      for (var message in chatHistory) {
-        _inChatMessages.add(message);
-      }
-      setCurrentChatId(newChatId: chatID);
-    } else {
-      _inChatMessages.clear();
-      setCurrentChatId(newChatId: chatID);
-    }
-    clearDraft();
-    notifyListeners();
-  }
-
-  Future<void> sentMessage({
-    required String message,
-    required bool isTextOnly,
-    List<XFile>? draftImages,
-  }) async {
-    final trimmedMessage = message.trim();
-    if (trimmedMessage.isEmpty) {
-      return;
-    }
-
-    await setModel(isTextOnly: isTextOnly);
-    setLoading(value: true);
-    String chatId = getChatId();
-    final imageFiles = isTextOnly
-        ? const <XFile>[]
-        : await _storeDraftImages(
-            chatId: chatId,
-            draftImages: draftImages,
+    var status = ReplyStatus.complete;
+    try {
+      if (savePrompt) await _persist();
+      if (!reply.stopped) {
+        final turns = await _contextFor(promptIndex, reply);
+        if (!reply.stopped) {
+          final iterator = StreamIterator<GeminiChunk>(
+            _gemini.streamReply(
+              apiKey: key,
+              mode: mode,
+              turns: turns,
+              abort: reply.abort.future,
+            ),
           );
-    List<Content> history = [];
-    history = await getHistory(chatId: chatId);
-    List<String> imagesUrls = getImagesUrls(imageFiles: imageFiles);
-    final messagesBox =
-        await Hive.openBox('${Constants.chatMessagesBox}$chatId');
-    final userMessageId = messagesBox.keys.length;
-    final assistantMessageId = messagesBox.keys.length + 1;
-
-    final userMessage = Message(
-      messageId: userMessageId.toString(),
-      chatId: chatId,
-      role: Role.user,
-      message: StringBuffer(trimmedMessage),
-      imagesUrls: imagesUrls,
-      timeSent: DateTime.now(),
-    );
-
-    _inChatMessages.add(userMessage);
-    notifyListeners();
-
-    if (currentChatId.isEmpty) {
-      setCurrentChatId(newChatId: chatId);
-    }
-
-    await sendMessageAndWaitForResponse(
-      message: trimmedMessage,
-      chatId: chatId,
-      isTextOnly: isTextOnly,
-      imageFiles: imageFiles,
-      history: history,
-      userMessage: userMessage,
-      modelMessageId: assistantMessageId.toString(),
-      messagesBox: messagesBox,
-    );
-  }
-
-  // send message to the model and wait for the response
-  Future<void> sendMessageAndWaitForResponse({
-    required String message,
-    required String chatId,
-    required bool isTextOnly,
-    required List<XFile> imageFiles,
-    required List<Content> history,
-    required Message userMessage,
-    required String modelMessageId,
-    required Box messagesBox,
-  }) async {
-    final chatSession = _model!.startChat(
-      history: history.isEmpty || !isTextOnly ? null : history,
-    );
-    final content = await getContent(
-      message: message,
-      isTextOnly: isTextOnly,
-      imageFiles: imageFiles,
-    );
-    final assistantMessage = userMessage.copyWith(
-      messageId: modelMessageId,
-      role: Role.assistant,
-      message: StringBuffer(),
-      timeSent: DateTime.now(),
-    );
-    _inChatMessages.add(assistantMessage);
-    notifyListeners();
-
-    try {
-      await _requestAssistantResponse(
-        chatSession: chatSession,
-        content: content,
-        assistantMessage: assistantMessage,
-      );
-      await saveMessagesToDB(
-        chatID: chatId,
-        userMessage: userMessage,
-        assistantMessage: assistantMessage,
-        messagesBox: messagesBox,
-      );
-    } catch (error, stackTrace) {
-      _removeAssistantDraft(assistantMessage);
-      notifyListeners();
-      Error.throwWithStackTrace(
-        StateError(formatChatError(error)),
-        stackTrace,
-      );
-    } finally {
-      if (messagesBox.isOpen) {
-        await messagesBox.close();
-      }
-      setLoading(value: false);
-    }
-  }
-
-  Future<void> _requestAssistantResponse({
-    required ChatSession chatSession,
-    required Content content,
-    required Message assistantMessage,
-  }) async {
-    try {
-      final response =
-          await chatSession.sendMessage(content).timeout(_requestTimeout);
-      _applyAssistantText(
-        assistantMessage: assistantMessage,
-        text: response.text?.trim() ?? '',
-      );
-    } catch (error) {
-      if (!shouldRetryRequest(error)) {
-        rethrow;
-      }
-
-      final retryResponse =
-          await chatSession.sendMessage(content).timeout(_requestTimeout);
-      _applyAssistantText(
-        assistantMessage: assistantMessage,
-        text: retryResponse.text?.trim() ?? '',
-      );
-    }
-  }
-
-  void _removeAssistantDraft(Message assistantMessage) {
-    _inChatMessages.removeWhere(
-      (element) =>
-          element.messageId == assistantMessage.messageId &&
-          element.role == Role.assistant &&
-          element.message.isEmpty,
-    );
-  }
-
-  void _applyAssistantText({
-    required Message assistantMessage,
-    required String text,
-  }) {
-    if (text.isEmpty) {
-      throw StateError('No response returned. Try again.');
-    }
-
-    assistantMessage.message = StringBuffer(text);
-    notifyListeners();
-  }
-
-  // save messages to hive db
-  Future<void> saveMessagesToDB({
-    required String chatID,
-    required Message userMessage,
-    required Message assistantMessage,
-    required Box messagesBox,
-  }) async {
-    final settings =
-        Boxes.getSettings().isNotEmpty ? Boxes.getSettings().getAt(0) : null;
-    final saveChatHistory = settings?.saveChatHistory ?? true;
-
-    if (!saveChatHistory) {
-      return;
-    }
-
-    await messagesBox.add(userMessage.toMap());
-    await messagesBox.add(assistantMessage.toMap());
-    final chatHistoryBox = Boxes.getChatHistory();
-    final chatHistory = ChatHistory(
-      chatId: chatID,
-      prompt: userMessage.message.toString(),
-      response: assistantMessage.message.toString(),
-      imagesUrls: userMessage.imagesUrls,
-      timestamp: DateTime.now(),
-    );
-    await chatHistoryBox.put(chatID, chatHistory);
-  }
-
-  Future<Content> getContent({
-    required String message,
-    required bool isTextOnly,
-    required List<XFile> imageFiles,
-  }) async {
-    if (isTextOnly) {
-      return Content.text(message);
-    } else {
-      final imageBytes = await Future.wait(
-        imageFiles.map((imageFile) => imageFile.readAsBytes()),
-      );
-      final prompt = TextPart(message);
-      final imageParts = imageBytes
-          .map((bytes) => DataPart('image/jpeg', Uint8List.fromList(bytes)))
-          .toList();
-
-      return Content.multi([prompt, ...imageParts]);
-    }
-  }
-
-  List<String> getImagesUrls({
-    required List<XFile> imageFiles,
-  }) {
-    return imageFiles.map((image) => image.path).toList(growable: false);
-  }
-
-  Future<List<XFile>> _storeDraftImages({
-    required String chatId,
-    List<XFile>? draftImages,
-  }) async {
-    final images = draftImages ?? _imagesFileList ?? const <XFile>[];
-    if (images.isEmpty) {
-      return const <XFile>[];
-    }
-
-    final appDir = await path.getApplicationDocumentsDirectory();
-    final mediaDir = Directory(
-      '${appDir.path}/${Constants.geminiDB}/chat_media/$chatId',
-    );
-    if (!await mediaDir.exists()) {
-      await mediaDir.create(recursive: true);
-    }
-
-    final storedImages = <XFile>[];
-    for (final imageFile in images) {
-      final extension = _fileExtension(imageFile.path);
-      final storedFile = File(
-        '${mediaDir.path}/${const Uuid().v4()}.$extension',
-      );
-      await storedFile.writeAsBytes(
-        await imageFile.readAsBytes(),
-        flush: true,
-      );
-      storedImages.add(XFile(storedFile.path));
-    }
-    return storedImages;
-  }
-
-  String _fileExtension(String pathValue) {
-    final lastDot = pathValue.lastIndexOf('.');
-    if (lastDot == -1 || lastDot == pathValue.length - 1) {
-      return 'jpg';
-    }
-    return pathValue.substring(lastDot + 1).toLowerCase();
-  }
-
-  Future<Set<String>> _storedImagePathsForChat({
-    required String chatId,
-  }) async {
-    final imagePaths = <String>{};
-    final storedMessages = await loadMessagesFromDB(chatId: chatId);
-    for (final message in storedMessages) {
-      imagePaths.addAll(message.imagesUrls);
-    }
-
-    if (currentChatId == chatId) {
-      for (final message in _inChatMessages) {
-        imagePaths.addAll(message.imagesUrls);
-      }
-    }
-
-    return imagePaths;
-  }
-
-  Future<void> _deleteImageFiles(Iterable<String> imagePaths) async {
-    for (final imagePath in imagePaths) {
-      if (imagePath.isEmpty) {
-        continue;
-      }
-      final file = File(imagePath);
-      if (await file.exists()) {
-        await file.delete();
-      }
-    }
-  }
-
-  Future<List<Content>> getHistory({required String chatId}) async {
-    List<Content> history = [];
-    if (currentChatId.isNotEmpty) {
-      final messages = await loadMessagesFromDB(chatId: chatId);
-
-      for (var message in messages) {
-        if (message.role == Role.user) {
-          history.add(Content.text(message.message.toString()));
-        } else {
-          history.add(Content.model([TextPart(message.message.toString())]));
+          reply.iterator = iterator;
+          while (await iterator.moveNext() && !reply.stopped) {
+            final chunk = iterator.current;
+            if (chunk.truncated) status = ReplyStatus.truncated;
+            if (chunk.text.isEmpty) continue;
+            reply.text.write(chunk.text);
+            _publishChunk(reply);
+          }
         }
       }
+      if (reply.stopped) {
+        status = ReplyStatus.stopped;
+      } else if (reply.text.toString().trim().isEmpty) {
+        _generationError = status == ReplyStatus.truncated
+            ? 'Gemini reached its length limit before writing a reply. Try a narrower prompt.'
+            : 'Gemini returned an empty reply. Try again.';
+        status = ReplyStatus.interrupted;
+      }
+    } catch (error) {
+      status = reply.stopped ? ReplyStatus.stopped : ReplyStatus.interrupted;
+      if (!reply.stopped) _generationError = formatChatError(error);
+    } finally {
+      reply.settling = true;
+      reply.cancelTimer();
+      reply.abortRequest();
+      try {
+        final text = reply.text.toString();
+        // A failed regeneration leaves the previously saved answer available.
+        final replacePrevious =
+            status == ReplyStatus.complete || status == ReplyStatus.truncated;
+        if (!_disposed &&
+            text.trim().isNotEmpty &&
+            (previous == null || replacePrevious)) {
+          final answer = reply.draft!.withReply(text, status: status);
+          if (previous == null) {
+            _messages.add(answer);
+          } else {
+            _messages[answerIndex] = answer;
+          }
+          reply.draft = null;
+          _notify();
+          await _persist();
+        }
+      } finally {
+        _reply = null;
+        reply.done.complete();
+        _notify();
+      }
     }
-
-    return history;
   }
 
-  String getChatId() {
-    if (currentChatId.isEmpty) {
-      return const Uuid().v4();
-    } else {
-      return currentChatId;
+  void _publishChunk(_Reply reply) {
+    if (reply.draft!.text.isEmpty) {
+      reply.draft = reply.draft!.withReply(reply.text.toString());
+      _notify();
+      return;
+    }
+    reply.updateTimer ??= Timer(_streamUpdateInterval, () {
+      reply.updateTimer = null;
+      if (reply.stopped || _disposed) return;
+      reply.draft = reply.draft!.withReply(reply.text.toString());
+      _notify();
+    });
+  }
+
+  void stopGeneration() {
+    final reply = _reply;
+    if (reply == null || !reply.canStop) return;
+    reply.stop();
+    _notify();
+  }
+
+  Future<List<GeminiTurn>> _contextFor(int promptIndex, _Reply reply) async {
+    final turns = <GeminiTurn>[];
+    var remainingText = _maxContextLength;
+    var remainingImages = ChatImage.maxRequestBytes;
+    final earliest = (promptIndex + 1 - _maxContextMessages).clamp(
+      0,
+      promptIndex,
+    );
+    for (
+      var index = promptIndex;
+      index >= earliest && !reply.stopped;
+      index--
+    ) {
+      final message = _messages[index];
+      if (index != promptIndex && message.text.length > remainingText) break;
+      remainingText -= message.text.length;
+      final images = <ChatImage>[];
+      if (message.role == Role.user) {
+        for (final reference in message.imagesUrls) {
+          if (reply.stopped || remainingImages == 0) break;
+          final image = await imageFor(message.chatId, reference);
+          if (image == null || image.bytes.length > remainingImages) {
+            if (index == promptIndex) {
+              throw const ChatException(
+                'An attached image is unavailable. Send the prompt with the image again.',
+              );
+            }
+            continue;
+          }
+          images.add(image);
+          remainingImages -= image.bytes.length;
+        }
+      }
+      turns.add(GeminiTurn(message.role, message.text, images));
+    }
+    return turns.reversed
+        .skipWhile((turn) => turn.role == Role.assistant)
+        .toList();
+  }
+
+  Future<ChatImage?> imageFor(String chatId, String reference) async =>
+      (chatId == _chatId ? _sessionImages[reference] : null) ??
+      await _repository.loadImage(chatId, reference);
+
+  Future<void> _persist() async {
+    if (_disposed) return;
+    if (historyOff) {
+      _sessionOnly = true;
+      return;
+    }
+    try {
+      await _repository.save(
+        chatId: _chatId,
+        messages: _messages,
+        mode: _mode,
+        newImages: _sessionImages,
+      );
+      _sessionImages.clear();
+      _storageError = null;
+    } catch (_) {
+      _storageError = 'This chat could not be saved to this device.';
     }
   }
 
-  static initHive() async {
-    final dir = await path.getApplicationDocumentsDirectory();
-    Hive.init(dir.path);
-    await Hive.initFlutter(Constants.geminiDB);
+  Future<void> newChat() => _changeConversation(() async {
+    _useConversation();
+  });
 
-    if (!Hive.isAdapterRegistered(0)) {
-      Hive.registerAdapter(ChatHistoryAdapter());
-      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
-    } else if (!Hive.isBoxOpen(Constants.chatHistoryBox)) {
-      await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
+  Future<void> openChat(String chatId) async {
+    if (chatId == _chatId) return;
+    await _changeConversation(() async {
+      final chat = _repository.getChat(chatId);
+      if (chat == null) {
+        throw const ChatException('This chat is no longer available.');
+      }
+      final messages = await _repository.loadMessages(chat);
+      _useConversation(
+        chatId: chatId,
+        messages: messages,
+        mode: ChatMode.fromName(chat.mode),
+      );
+    });
+  }
+
+  Future<void> deleteChat(String chatId) => _changeConversation(() async {
+    await _repository.delete(chatId);
+    if (_chatId == chatId) _useConversation();
+  }, stopReply: _chatId == chatId);
+
+  Future<void> clearAllChats() {
+    final chatId = _chatId;
+    final activeIsSaved =
+        chatId.isNotEmpty && _repository.getChat(chatId) != null;
+    return _changeConversation(() async {
+      final hadSavedChat =
+          chatId.isNotEmpty && _repository.getChat(chatId) != null;
+      try {
+        await _repository.clear();
+      } finally {
+        if (hadSavedChat && _repository.getChat(chatId) == null)
+          _useConversation();
+      }
+    }, stopReply: activeIsSaved || !historyOff);
+  }
+
+  Future<void> _changeConversation(
+    Future<void> Function() action, {
+    bool stopReply = true,
+  }) async {
+    if (_changingConversation) {
+      throw const ChatException('A chat action is already in progress.');
     }
-    if (!Hive.isAdapterRegistered(1)) {
-      Hive.registerAdapter(UserModelAdapter());
-      await Hive.openBox<UserModel>(Constants.userBox);
-    } else if (!Hive.isBoxOpen(Constants.userBox)) {
-      await Hive.openBox<UserModel>(Constants.userBox);
+    _changingConversation = true;
+    _notify();
+    try {
+      final reply = _reply;
+      if (reply != null && stopReply) {
+        stopGeneration();
+        await reply.done.future;
+      }
+      if (!_disposed) await action();
+    } finally {
+      _changingConversation = false;
+      _notify();
     }
-    if (!Hive.isAdapterRegistered(2)) {
-      Hive.registerAdapter(SettingsAdapter());
-      await Hive.openBox<Settings>(Constants.settingsBox);
-    } else if (!Hive.isBoxOpen(Constants.settingsBox)) {
-      await Hive.openBox<Settings>(Constants.settingsBox);
-    }
+  }
+
+  void _useConversation({
+    String chatId = '',
+    List<Message> messages = const [],
+    ChatMode mode = ChatMode.general,
+  }) {
+    _chatId = chatId;
+    _messages
+      ..clear()
+      ..addAll(messages);
+    _sessionImages.clear();
+    _sessionOnly = false;
+    _mode = mode;
+    _generationError = null;
+    _storageError = null;
+    _conversationVersion++;
+  }
+
+  Future<List<ChatHistory>> searchChats(
+    List<ChatHistory> chats,
+    String query,
+  ) => _repository.search(chats, query);
+
+  Future<void> renameChat(String chatId, String title) =>
+      _repository.rename(chatId, title);
+
+  Future<void> togglePin(String chatId) => _repository.togglePin(chatId);
+
+  String exportCurrentChat() {
+    final title = _sessionOnly
+        ? null
+        : _repository.getChat(_chatId)?.displayTitle;
+    return transcriptAsMarkdown(title ?? 'Conversation', _messages);
+  }
+
+  Future<String> exportSavedChat(ChatHistory chat) async {
+    final messages = await _repository.loadMessages(chat);
+    return transcriptAsMarkdown(chat.displayTitle, messages);
+  }
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _reply?.stop();
+    _gemini.close();
+    super.dispose();
+  }
+}
+
+class _Reply {
+  _Reply({required this.draft, required this.previousAnswer});
+
+  final Message? previousAnswer;
+  final Completer<void> abort = Completer<void>();
+  final Completer<void> done = Completer<void>();
+  final StringBuffer text = StringBuffer();
+  Message? draft;
+  Timer? updateTimer;
+  StreamIterator<GeminiChunk>? iterator;
+  bool stopped = false;
+  bool settling = false;
+
+  bool get canStop => !stopped && !settling;
+
+  void stop() {
+    if (!canStop) return;
+    stopped = true;
+    cancelTimer();
+    abortRequest();
+    final stream = iterator;
+    if (stream != null) unawaited(stream.cancel().onError((_, __) {}));
+  }
+
+  void abortRequest() {
+    if (!abort.isCompleted) abort.complete();
+  }
+
+  void cancelTimer() {
+    updateTimer?.cancel();
+    updateTimer = null;
   }
 }

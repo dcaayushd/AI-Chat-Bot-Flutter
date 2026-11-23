@@ -1,210 +1,87 @@
-import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/settings.dart';
+import 'package:material_ui/material_ui.dart';
 
-enum AppThemeMode {
-  auto,
-  light,
-  dark,
-}
+enum AppThemeMode { auto, light, dark }
 
 class SettingsProvider extends ChangeNotifier {
-  AppThemeMode _appThemeMode = AppThemeMode.auto;
-  bool _enableHaptics = true;
-  bool _saveChatHistory = true;
-  bool _autoScroll = true;
-  bool _enableVoiceInput = true;
-  bool _reduceMotion = false;
-  bool _sendWithEnter = true;
-  bool _autoFocusComposer = false;
-  bool _showStarterPrompts = true;
+  Settings _settings = Settings();
+  Future<void> _writes = Future.value();
+  bool _disposed = false;
 
-  AppThemeMode get appThemeMode => _appThemeMode;
-
-  ThemeMode get themeMode => switch (_appThemeMode) {
-        AppThemeMode.auto => ThemeMode.system,
-        AppThemeMode.light => ThemeMode.light,
-        AppThemeMode.dark => ThemeMode.dark,
-      };
-
-  bool get isDarkMode => _appThemeMode == AppThemeMode.dark;
-
-  bool get enableHaptics => _enableHaptics;
-
-  bool get saveChatHistory => _saveChatHistory;
-
-  bool get autoScroll => _autoScroll;
-
-  bool get enableVoiceInput => _enableVoiceInput;
-
-  bool get reduceMotion => _reduceMotion;
-
-  bool get sendWithEnter => _sendWithEnter;
-
-  bool get autoFocusComposer => _autoFocusComposer;
-
-  bool get showStarterPrompts => _showStarterPrompts;
-
-  AppThemeMode _themeModeFromSettings(Settings settings) {
-    final storedIndex = settings.themeModeIndex;
-    if (storedIndex >= 0 && storedIndex < AppThemeMode.values.length) {
-      return AppThemeMode.values[storedIndex];
+  AppThemeMode get appThemeMode {
+    final index = _settings.themeModeIndex;
+    if (index >= 0 && index < AppThemeMode.values.length) {
+      return AppThemeMode.values[index];
     }
-    return settings.isDarkTheme ? AppThemeMode.dark : AppThemeMode.light;
+    return _settings.isDarkTheme ? AppThemeMode.dark : AppThemeMode.light;
   }
 
-  // get the saved settings from box
+  ThemeMode get themeMode => switch (appThemeMode) {
+    AppThemeMode.auto => ThemeMode.system,
+    AppThemeMode.light => ThemeMode.light,
+    AppThemeMode.dark => ThemeMode.dark,
+  };
+
+  bool get enableHaptics => _settings.enableHaptics;
+  bool get saveChatHistory => _settings.saveChatHistory;
+  bool get autoScroll => _settings.autoScroll;
+  bool get enableVoiceInput => _settings.enableVoiceInput;
+  bool get reduceMotion => _settings.reduceMotion;
+  bool get sendWithEnter => _settings.sendWithEnter;
+  bool get autoFocusComposer => _settings.autoFocusComposer;
+  bool get showStarterPrompts => _settings.showStarterPrompts;
+
   void getSavedSettings() {
-    final settingsBox = Boxes.getSettings();
-
-    // check is the settings box is open
-    if (settingsBox.isNotEmpty) {
-      // get the settings
-      final settings = settingsBox.getAt(0);
-      _appThemeMode = _themeModeFromSettings(settings!);
-      _enableHaptics = settings.enableHaptics;
-      _saveChatHistory = settings.saveChatHistory;
-      _autoScroll = settings.autoScroll;
-      _enableVoiceInput = settings.enableVoiceInput;
-      _reduceMotion = settings.reduceMotion;
-      _sendWithEnter = settings.sendWithEnter;
-      _autoFocusComposer = settings.autoFocusComposer;
-      _showStarterPrompts = settings.showStarterPrompts;
-    }
+    _settings = Boxes.getSettings().values.firstOrNull ?? Settings();
   }
 
-  Settings _currentSettings(Settings? settings) {
-    return settings ??
-        Settings(
-          isDarkTheme: isDarkMode,
-          enableHaptics: enableHaptics,
-          saveChatHistory: saveChatHistory,
-          autoScroll: autoScroll,
-          enableVoiceInput: enableVoiceInput,
-          reduceMotion: reduceMotion,
-          confirmBeforeDeleting: true,
-          themeModeIndex: appThemeMode.index,
-          sendWithEnter: sendWithEnter,
-          autoFocusComposer: autoFocusComposer,
-          showStarterPrompts: showStarterPrompts,
-        );
+  Future<void> setThemeMode({required AppThemeMode value}) =>
+      _update((settings) {
+        settings.isDarkTheme = value == AppThemeMode.dark;
+        settings.themeModeIndex = value.index;
+      });
+
+  Future<void> toggleHaptics({required bool value}) =>
+      _update((settings) => settings.enableHaptics = value);
+
+  Future<void> toggleSaveChatHistory({required bool value}) =>
+      _update((settings) => settings.saveChatHistory = value);
+
+  Future<void> toggleAutoScroll({required bool value}) =>
+      _update((settings) => settings.autoScroll = value);
+
+  Future<void> toggleVoiceInput({required bool value}) =>
+      _update((settings) => settings.enableVoiceInput = value);
+
+  Future<void> toggleReduceMotion({required bool value}) =>
+      _update((settings) => settings.reduceMotion = value);
+
+  Future<void> toggleSendWithEnter({required bool value}) =>
+      _update((settings) => settings.sendWithEnter = value);
+
+  Future<void> toggleAutoFocusComposer({required bool value}) =>
+      _update((settings) => settings.autoFocusComposer = value);
+
+  Future<void> toggleShowStarterPrompts({required bool value}) =>
+      _update((settings) => settings.showStarterPrompts = value);
+
+  Future<void> _update(void Function(Settings) change) {
+    final write = _writes.then((_) async {
+      final updated = _settings.copy();
+      change(updated);
+      final box = Boxes.getSettings();
+      await box.put(box.keys.firstOrNull ?? 0, updated);
+      _settings = updated;
+      if (!_disposed) notifyListeners();
+    });
+    _writes = write.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return write;
   }
 
-  void _saveSettings(Settings settings) {
-    final settingsBox = Boxes.getSettings();
-    if (settingsBox.isEmpty) {
-      settingsBox.put(0, settings);
-    } else {
-      settingsBox.put(0, settings);
-    }
-  }
-
-  void setThemeMode({
-    required AppThemeMode value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.isDarkTheme = value == AppThemeMode.dark;
-    current.themeModeIndex = value.index;
-    _saveSettings(current);
-
-    _appThemeMode = value;
-    notifyListeners();
-  }
-
-  void toggleHaptics({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.enableHaptics = value;
-    _saveSettings(current);
-
-    _enableHaptics = value;
-    notifyListeners();
-  }
-
-  void toggleSaveChatHistory({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.saveChatHistory = value;
-    _saveSettings(current);
-
-    _saveChatHistory = value;
-    notifyListeners();
-  }
-
-  void toggleAutoScroll({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.autoScroll = value;
-    _saveSettings(current);
-
-    _autoScroll = value;
-    notifyListeners();
-  }
-
-  void toggleVoiceInput({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.enableVoiceInput = value;
-    _saveSettings(current);
-
-    _enableVoiceInput = value;
-    notifyListeners();
-  }
-
-  void toggleReduceMotion({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.reduceMotion = value;
-    _saveSettings(current);
-
-    _reduceMotion = value;
-    notifyListeners();
-  }
-
-  void toggleSendWithEnter({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.sendWithEnter = value;
-    _saveSettings(current);
-
-    _sendWithEnter = value;
-    notifyListeners();
-  }
-
-  void toggleAutoFocusComposer({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.autoFocusComposer = value;
-    _saveSettings(current);
-
-    _autoFocusComposer = value;
-    notifyListeners();
-  }
-
-  void toggleShowStarterPrompts({
-    required bool value,
-    Settings? settings,
-  }) {
-    final current = _currentSettings(settings);
-    current.showStarterPrompts = value;
-    _saveSettings(current);
-
-    _showStarterPrompts = value;
-    notifyListeners();
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

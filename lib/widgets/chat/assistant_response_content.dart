@@ -1,248 +1,165 @@
-import 'package:cupertino_ui/cupertino_ui.dart';
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:markdown/markdown.dart' as md;
+import 'package:material_ui/material_ui.dart';
 
 class AssistantResponseContent extends StatelessWidget {
-  const AssistantResponseContent({
-    super.key,
-    required this.text,
-  });
-
-  static final RegExp _codeBlockPattern =
-      RegExp(r'```([^\n`]*)\n([\s\S]*?)```');
+  const AssistantResponseContent({super.key, required this.text});
 
   final String text;
 
-  static bool containsCodeBlocks(String text) =>
-      _codeBlockPattern.hasMatch(text);
-
   @override
   Widget build(BuildContext context) {
-    final segments = _segmentsFrom(text);
-    final markdownStyle = _markdownStyle(context);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final segment in segments) ...[
-          if (segment.isCode)
-            _CodeBlockCard(
-              language: segment.language,
-              code: segment.content,
-            )
-          else if (segment.content.trim().isNotEmpty)
-            MarkdownBody(
-              selectable: true,
-              data: segment.content,
-              styleSheet: markdownStyle,
-            ),
-          const SizedBox(height: 12),
-        ],
-      ],
-    );
-  }
-
-  List<_ResponseSegment> _segmentsFrom(String text) {
-    final segments = <_ResponseSegment>[];
-    var lastEnd = 0;
-
-    for (final match in _codeBlockPattern.allMatches(text)) {
-      if (match.start > lastEnd) {
-        segments.add(
-          _ResponseSegment.markdown(
-            text.substring(lastEnd, match.start),
-          ),
-        );
-      }
-
-      segments.add(
-        _ResponseSegment.code(
-          (match.group(2) ?? '').trimRight(),
-          language: (match.group(1) ?? '').trim(),
-        ),
-      );
-      lastEnd = match.end;
-    }
-
-    if (lastEnd < text.length) {
-      segments.add(_ResponseSegment.markdown(text.substring(lastEnd)));
-    }
-
-    return segments.isEmpty ? [_ResponseSegment.markdown(text)] : segments;
-  }
-
-  MarkdownStyleSheet _markdownStyle(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return MarkdownStyleSheet(
-      pPadding: EdgeInsets.zero,
-      h1: theme.textTheme.headlineSmall,
-      h1Padding: EdgeInsets.zero,
-      h2: theme.textTheme.titleLarge,
-      h2Padding: EdgeInsets.zero,
-      h3: theme.textTheme.titleMedium,
-      h3Padding: EdgeInsets.zero,
-      h4: theme.textTheme.bodyLarge,
-      h4Padding: EdgeInsets.zero,
-      h5: theme.textTheme.bodyLarge,
-      h5Padding: EdgeInsets.zero,
-      h6: theme.textTheme.bodyLarge,
-      h6Padding: EdgeInsets.zero,
-      em: const TextStyle(fontStyle: FontStyle.italic),
-      strong: const TextStyle(fontWeight: FontWeight.bold),
-      del: const TextStyle(decoration: TextDecoration.lineThrough),
-      blockquote: theme.textTheme.bodyMedium,
-      img: theme.textTheme.bodyMedium,
-      checkbox: theme.textTheme.bodyMedium?.copyWith(
-        color: theme.primaryColor,
-      ),
-      listIndent: 24,
-      listBulletPadding: const EdgeInsets.only(right: 4),
-      tableHead: const TextStyle(fontWeight: FontWeight.w600),
-      tableBody: theme.textTheme.bodyMedium,
-      tableHeadAlign: TextAlign.center,
-      tablePadding: const EdgeInsets.only(bottom: 4),
-      tableBorder: TableBorder.all(color: theme.dividerColor),
-      tableColumnWidth: const FlexColumnWidth(),
-      tableCellsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      tableCellsDecoration: const BoxDecoration(),
-      blockquotePadding: const EdgeInsets.all(8),
-      horizontalRuleDecoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(width: 5, color: theme.dividerColor),
+    final colors = theme.colorScheme;
+    final body = theme.textTheme.bodyLarge?.copyWith(height: 1.5);
+    return MarkdownBody(
+      data: text,
+      selectable: true,
+      fitContent: false,
+      builders: {'pre': _CodeBlockBuilder()},
+      // Avoid making network requests based on markup in the reply.
+      imageBuilder: (uri, title, alt) => Text(alt ?? title ?? 'Image'),
+      onTapLink: (text, href, title) async {
+        final link = href == null ? null : Uri.tryParse(href);
+        if (link != null && (link.scheme == 'https' || link.scheme == 'http')) {
+          await _copy(context, href!, 'Link copied');
+        }
+      },
+      styleSheet: MarkdownStyleSheet(
+        a: body?.copyWith(
+          color: colors.primary,
+          decoration: TextDecoration.underline,
         ),
-      ),
-      p: theme.textTheme.bodyLarge?.copyWith(height: 1.48),
-      listBullet: theme.textTheme.bodyLarge,
-      blockquoteDecoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(16),
-        border: Border(
-          left: BorderSide(
-            color: colorScheme.primary,
-            width: 3,
-          ),
+        p: body,
+        pPadding: EdgeInsets.zero,
+        h1: theme.textTheme.headlineSmall,
+        h2: theme.textTheme.titleLarge,
+        h3: theme.textTheme.titleMedium,
+        h4: theme.textTheme.bodyLarge,
+        h5: theme.textTheme.bodyLarge,
+        h6: theme.textTheme.bodyLarge,
+        em: const TextStyle(fontStyle: FontStyle.italic),
+        strong: const TextStyle(fontWeight: FontWeight.bold),
+        del: const TextStyle(decoration: TextDecoration.lineThrough),
+        blockquote: body,
+        blockquotePadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 6,
         ),
-      ),
-      blockSpacing: 14,
-      code: theme.textTheme.bodyMedium?.copyWith(
-        fontFamily: 'monospace',
-      ),
-      codeblockPadding: EdgeInsets.zero,
-      codeblockDecoration: const BoxDecoration(
-        color: Colors.transparent,
+        blockquoteDecoration: BoxDecoration(
+          color: colors.surfaceContainer,
+          border: Border(left: BorderSide(color: colors.primary, width: 3)),
+        ),
+        img: body,
+        checkbox: TextStyle(color: colors.primary),
+        code: theme.textTheme.bodyMedium?.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: colors.surfaceContainerHigh,
+        ),
+        codeblockPadding: EdgeInsets.zero,
+        codeblockDecoration: const BoxDecoration(),
+        listBullet: body,
+        listIndent: 24,
+        listBulletPadding: const EdgeInsets.only(right: 4),
+        blockSpacing: 12,
+        tableHead: theme.textTheme.labelLarge,
+        tableHeadAlign: TextAlign.start,
+        tableBody: theme.textTheme.bodyMedium,
+        tableBorder: TableBorder.all(color: colors.outlineVariant),
+        tableColumnWidth: const IntrinsicColumnWidth(),
+        tablePadding: EdgeInsets.zero,
+        tableCellsPadding: const EdgeInsets.all(8),
+        tableCellsDecoration: const BoxDecoration(),
+        horizontalRuleDecoration: BoxDecoration(
+          border: Border(top: BorderSide(color: colors.outlineVariant)),
+        ),
       ),
     );
   }
 }
 
-class _CodeBlockCard extends StatelessWidget {
-  const _CodeBlockCard({
-    required this.language,
-    required this.code,
-  });
+Future<void> _copy(
+  BuildContext context,
+  String text,
+  String confirmation,
+) async {
+  await Clipboard.setData(ClipboardData(text: text));
+  if (context.mounted) showAppSnackBar(context, confirmation, bottomOffset: 78);
+}
 
-  final String language;
+class _CodeBlockBuilder extends MarkdownElementBuilder {
+  @override
+  Widget visitText(md.Text text, TextStyle? preferredStyle) =>
+      const SizedBox.shrink();
+
+  @override
+  Widget visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final code = element.children?.whereType<md.Element>().firstOrNull;
+    final language = code?.attributes['class']?.replaceFirst('language-', '');
+    return _CodeBlockCard(language: language, code: element.textContent);
+  }
+}
+
+class _CodeBlockCard extends StatelessWidget {
+  const _CodeBlockCard({required this.language, required this.code});
+
+  final String? language;
   final String code;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Container(
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHigh.withValues(alpha: 0.92),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: colorScheme.outlineVariant.withValues(alpha: 0.48),
+    final colors = theme.colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    language ?? 'Code',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Copy code',
+                  onPressed: () => _copy(context, code, 'Code copied'),
+                  icon: const Icon(Icons.content_copy_rounded, size: 16),
+                ),
+              ],
             ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 8, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      language.isEmpty ? 'Code' : language.toUpperCase(),
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'Copy code',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        await Clipboard.setData(ClipboardData(text: code));
-                        if (context.mounted) {
-                          showAppSnackBar(context, 'Code copied',
-                              bottomOffset: 132);
-                        }
-                      },
-                      icon: const Icon(CupertinoIcons.doc_on_doc, size: 18),
-                    ),
-                  ],
-                ),
+          const Divider(height: 1),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.all(12),
+            child: SelectableText(
+              code,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+                height: 1.55,
               ),
-              const Divider(height: 1),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minWidth: constraints.maxWidth - 28,
-                  ),
-                  child: SelectableText(
-                    code,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontFamily: 'monospace',
-                      height: 1.6,
-                      color: colorScheme.onSurface,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
-}
-
-class _ResponseSegment {
-  const _ResponseSegment._({
-    required this.content,
-    required this.isCode,
-    this.language = '',
-  });
-
-  factory _ResponseSegment.markdown(String content) {
-    return _ResponseSegment._(
-      content: content,
-      isCode: false,
-    );
-  }
-
-  factory _ResponseSegment.code(String content, {required String language}) {
-    return _ResponseSegment._(
-      content: content,
-      isCode: true,
-      language: language,
-    );
-  }
-
-  final String content;
-  final bool isCode;
-  final String language;
 }

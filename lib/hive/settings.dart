@@ -5,50 +5,63 @@ part 'settings.g.dart';
 @HiveType(typeId: 2)
 class Settings extends HiveObject {
   @HiveField(0)
-  bool isDarkTheme = false;
+  bool isDarkTheme;
 
   @HiveField(1)
-  bool enableHaptics = true;
+  bool enableHaptics;
 
   @HiveField(2)
-  bool saveChatHistory = true;
+  bool saveChatHistory;
 
   @HiveField(3)
-  bool autoScroll = true;
+  bool autoScroll;
 
   @HiveField(4)
-  bool enableVoiceInput = true;
+  bool enableVoiceInput;
 
   @HiveField(5)
-  bool reduceMotion = false;
+  bool reduceMotion;
 
   @HiveField(6)
-  bool confirmBeforeDeleting = true;
+  bool confirmBeforeDeleting;
 
   @HiveField(7)
-  int themeModeIndex = 0;
+  int themeModeIndex;
 
   @HiveField(8)
-  bool sendWithEnter = true;
+  bool sendWithEnter;
 
   @HiveField(9)
-  bool autoFocusComposer = false;
+  bool autoFocusComposer;
 
   @HiveField(10)
-  bool showStarterPrompts = true;
+  bool showStarterPrompts;
 
-  // constructor
   Settings({
-    required this.isDarkTheme,
-    required this.enableHaptics,
-    required this.saveChatHistory,
-    required this.autoScroll,
-    required this.enableVoiceInput,
-    required this.reduceMotion,
-    required this.confirmBeforeDeleting,
-    required this.themeModeIndex,
-    required this.sendWithEnter,
-    required this.autoFocusComposer,
-    required this.showStarterPrompts,
+    this.isDarkTheme = false,
+    this.enableHaptics = true,
+    this.saveChatHistory = true,
+    this.autoScroll = true,
+    this.enableVoiceInput = true,
+    this.reduceMotion = false,
+    this.confirmBeforeDeleting = true,
+    this.themeModeIndex = 0,
+    this.sendWithEnter = true,
+    this.autoFocusComposer = false,
+    this.showStarterPrompts = true,
   });
+
+  Settings copy() => Settings(
+    isDarkTheme: isDarkTheme,
+    enableHaptics: enableHaptics,
+    saveChatHistory: saveChatHistory,
+    autoScroll: autoScroll,
+    enableVoiceInput: enableVoiceInput,
+    reduceMotion: reduceMotion,
+    confirmBeforeDeleting: confirmBeforeDeleting,
+    themeModeIndex: themeModeIndex,
+    sendWithEnter: sendWithEnter,
+    autoFocusComposer: autoFocusComposer,
+    showStarterPrompts: showStarterPrompts,
+  );
 }

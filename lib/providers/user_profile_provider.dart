@@ -1,71 +1,84 @@
-import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/user_model.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
+import 'package:flutter/foundation.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 class UserProfileProvider extends ChangeNotifier {
-  String _uid = '';
-  String _name = 'You';
-  String _imagePath = '';
+  static const maxAvatarBytes = 4 * 1024 * 1024;
 
-  String get uid => _uid;
-  String get name => _name.trim().isEmpty ? 'You' : _name.trim();
-  String get firstName => name.split(' ').first;
-  String get imagePath => _imagePath;
-  bool get hasImage => _imagePath.trim().isNotEmpty;
-  String get initials {
-    final parts = name.split(' ').where((part) => part.isNotEmpty).toList();
-    if (parts.isEmpty) {
-      return 'Y';
-    }
-    if (parts.length == 1) {
-      return parts.first[0].toUpperCase();
-    }
-    return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+  UserModel? _profile;
+  Future<Uint8List?>? _legacyAvatar;
+  Uint8List? _avatarBytes;
+  bool _disposed = false;
+
+  String get name {
+    final value = _profile?.name.trim() ?? '';
+    return value.isEmpty ? 'You' : value;
   }
+
+  String get firstName => name.split(RegExp(r'\s+')).first;
+  Uint8List? get avatarBytes => _avatarBytes;
 
   Future<void> loadUser() async {
-    final userBox = Boxes.getUser();
-    if (userBox.isEmpty) {
-      _uid = '';
-      _name = 'You';
-      _imagePath = '';
-      notifyListeners();
-      return;
-    }
+    final saved = Boxes.getUser().values.firstOrNull;
+    if (saved == null) return;
 
-    final user = userBox.getAt(0);
-    if (user == null) {
-      return;
+    _profile = saved;
+    _avatarBytes = saved.avatarBytes?.asUnmodifiableView();
+    if (_avatarBytes == null && saved.image.isNotEmpty && !kIsWeb) {
+      final pending = _readLegacyAvatar(saved.image);
+      _legacyAvatar = pending;
+      final bytes = await pending;
+      if (!identical(_profile, saved)) return;
+      _avatarBytes = bytes;
     }
-
-    _uid = user.uid;
-    _name = user.name;
-    _imagePath = user.image;
-    notifyListeners();
+    _notify();
   }
 
-  Future<void> saveProfile({
-    required String name,
-    required String imagePath,
-  }) async {
-    final trimmedName = name.trim().isEmpty ? 'You' : name.trim();
-    final userBox = Boxes.getUser();
-    final user = UserModel(
-      uid: _uid.isEmpty ? const Uuid().v4() : _uid,
-      name: trimmedName,
-      image: imagePath,
-    );
-
-    if (userBox.isEmpty) {
-      await userBox.add(user);
-    } else {
-      await userBox.putAt(0, user);
+  Future<Uint8List?> _readLegacyAvatar(String path) async {
+    try {
+      final file = XFile(path);
+      if (await file.length() > maxAvatarBytes) return null;
+      final bytes = await file.readAsBytes();
+      return bytes.isEmpty || bytes.length > maxAvatarBytes
+          ? null
+          : bytes.asUnmodifiableView();
+    } on Exception {
+      return null;
     }
+  }
 
-    _uid = user.uid;
-    _name = user.name;
-    _imagePath = user.image;
-    notifyListeners();
+  Future<void> saveProfile({required String name, Uint8List? newAvatar}) async {
+    if (newAvatar != null &&
+        (newAvatar.isEmpty || newAvatar.length > maxAvatarBytes)) {
+      throw const ChatException('Choose a profile photo up to 4 MB.');
+    }
+    final trimmedName = name.trim();
+    final box = Boxes.getUser();
+    final current = _profile;
+    final image = newAvatar ?? _avatarBytes ?? await _legacyAvatar;
+    final user = UserModel(
+      uid: current?.uid ?? const Uuid().v4(),
+      name: trimmedName.isEmpty ? 'You' : trimmedName,
+      image: image == null ? current?.image ?? '' : '',
+      avatarBytes: image?.asUnmodifiableView(),
+    );
+    await box.put(box.keys.firstOrNull ?? 0, user);
+    _profile = user;
+    _legacyAvatar = null;
+    _avatarBytes = user.avatarBytes;
+    _notify();
+  }
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

@@ -1,8 +1,6 @@
-import 'dart:ui';
+import 'dart:async';
 
-import 'package:cupertino_ui/cupertino_ui.dart';
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
+import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/providers/voice_input_provider.dart';
@@ -12,520 +10,464 @@ import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/preview_images_widget.dart';
 import 'package:flutter/foundation.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
-enum _AttachmentAction {
-  photos,
-  camera,
-  clear,
-}
+enum _AttachmentSource { photos, camera }
 
 class BottomChatField extends StatefulWidget {
   const BottomChatField({
     super.key,
-    required this.chatProvider,
+    required this.conversationVersion,
+    required this.isBusy,
+    required this.isGenerating,
+    required this.canStop,
+    required this.compact,
   });
 
-  final ChatProvider chatProvider;
+  final int conversationVersion;
+  final bool isBusy;
+  final bool isGenerating;
+  final bool canStop;
+  final bool compact;
 
   @override
-  State<BottomChatField> createState() => _BottomChatFieldState();
+  State<BottomChatField> createState() => BottomChatFieldState();
 }
 
-class _BottomChatFieldState extends State<BottomChatField> {
-  final TextEditingController textController = TextEditingController();
-  final FocusNode textFieldFocus = FocusNode();
-  final ImagePicker _picker = ImagePicker();
-  VoiceInputProvider? _voiceProvider;
-  String _voiceSeedText = '';
+class BottomChatFieldState extends State<BottomChatField> {
+  final _text = TextEditingController();
+  final _focus = FocusNode();
+  final _picker = ImagePicker();
+  List<ChatImage> _images = const [];
+  late final VoiceInputProvider _voice;
+  String _voiceSeed = '';
   String _lastTranscript = '';
   String _lastVoiceError = '';
+  bool _acceptVoice = false;
+  bool _submitting = false;
+  bool _picking = false;
 
   @override
   void initState() {
-    textController.addListener(_handleComposerChange);
     super.initState();
+    _voice = context.read<VoiceInputProvider>()
+      ..addListener(_handleVoiceUpdate);
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      unawaited(_restoreAndroidSelection());
+    }
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final provider = context.read<VoiceInputProvider>();
-    if (_voiceProvider == provider) {
-      return;
-    }
-    _voiceProvider?.removeListener(_handleVoiceUpdates);
-    _voiceProvider = provider;
-    provider.addListener(_handleVoiceUpdates);
-  }
-
-  void _handleComposerChange() {
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  void _handleVoiceUpdates() {
-    final voiceProvider = _voiceProvider;
-    if (!mounted || voiceProvider == null) {
-      return;
-    }
-
-    final transcript = voiceProvider.transcript.trim();
-    if (transcript != _lastTranscript) {
-      _lastTranscript = transcript;
-      final merged = _mergeVoiceText(_voiceSeedText, transcript);
-      textController.value = TextEditingValue(
-        text: merged,
-        selection: TextSelection.collapsed(offset: merged.length),
-      );
-    }
-
-    if (voiceProvider.error.isNotEmpty &&
-        voiceProvider.error != _lastVoiceError) {
-      _lastVoiceError = voiceProvider.error;
-      showAppSnackBar(context, voiceProvider.error, bottomOffset: 132);
-    }
-
-    setState(() {});
-  }
-
-  String _mergeVoiceText(String base, String transcript) {
-    if (base.isEmpty) {
-      return transcript;
-    }
-    if (transcript.isEmpty) {
-      return base;
-    }
-    return '$base $transcript';
-  }
-
-  Future<void> _toggleVoiceInput() async {
-    final settingsProvider = context.read<SettingsProvider>();
-    final voiceProvider = context.read<VoiceInputProvider>();
-
-    if (!settingsProvider.enableVoiceInput) {
-      return;
-    }
-
-    if (voiceProvider.isListening) {
-      await voiceProvider.stopListening();
-      return;
-    }
-
-    _voiceSeedText = textController.text.trim();
-    _lastTranscript = '';
-    _lastVoiceError = '';
-
-    await voiceProvider.ensureInitialized();
-    if (!voiceProvider.isAvailable) {
-      if (!mounted) {
-        return;
+  void didUpdateWidget(covariant BottomChatField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.conversationVersion != oldWidget.conversationVersion) {
+      _acceptVoice = false;
+      _images = const [];
+      _text.clear();
+      if (_voice.isListening || _voice.isStarting) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) cancelDictation();
+        });
       }
-      showAppSnackBar(context, 'Voice unavailable', bottomOffset: 132);
-      return;
     }
+  }
 
-    voiceProvider.clearTranscript();
-    await voiceProvider.startListening();
-    if (settingsProvider.enableHaptics) {
-      await HapticFeedback.selectionClick();
+  void useDraft(String text) {
+    cancelDictation();
+    _text.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _focus.requestFocus();
+  }
+
+  void cancelDictation() {
+    _acceptVoice = false;
+    if (_voice.isListening || _voice.isStarting) {
+      unawaited(_voice.cancelListening());
     }
   }
 
   @override
   void dispose() {
-    _voiceProvider?.removeListener(_handleVoiceUpdates);
-    textController.removeListener(_handleComposerChange);
-    textController.dispose();
-    textFieldFocus.dispose();
+    _voice.removeListener(_handleVoiceUpdate);
+    _text.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
-  Future<void> sendChatMessage({
-    required String message,
-    required ChatProvider chatProvider,
-    required bool isTextOnly,
-  }) async {
-    final enableHaptics = context.read<SettingsProvider>().enableHaptics;
-    final voiceProvider = context.read<VoiceInputProvider>();
-    final draftText = message;
-    final draftImages =
-        List<XFile>.from(chatProvider.imagesFileList ?? const <XFile>[]);
-    final shouldClearText = draftText.trim().isNotEmpty;
-    final shouldRestoreImages = draftImages.isNotEmpty;
-    var didSend = false;
+  bool get _hasDraft => _text.text.trim().isNotEmpty || _images.isNotEmpty;
 
+  Future<void> _submit() async {
+    final chat = context.read<ChatProvider>();
+    if (_submitting || _picking || chat.isBusy || !_hasDraft) return;
+
+    final enableHaptics = context.read<SettingsProvider>().enableHaptics;
+    final version = widget.conversationVersion;
+    _submitting = true;
+    TextEditingValue? draft;
+    List<ChatImage>? images;
     try {
-      await voiceProvider.stopListening();
-      if (shouldClearText) {
-        textController.clear();
+      if (_voice.isStarting) {
+        cancelDictation();
+      } else {
+        await _voice.stopListening();
       }
-      if (shouldRestoreImages) {
-        chatProvider.clearDraft();
-      }
-      final normalizedMessage = message.trim().isEmpty && !isTextOnly
-          ? 'Describe this image.'
-          : message.trim();
-      await chatProvider.sentMessage(
-        message: normalizedMessage,
-        isTextOnly: isTextOnly,
-        draftImages: draftImages,
-      );
-      didSend = true;
-      if (enableHaptics) {
-        await HapticFeedback.lightImpact();
-      }
-    } catch (e) {
-      if (!mounted) {
+      if (!mounted || version != chat.conversationVersion || chat.isBusy) {
         return;
       }
-      if (!didSend && shouldClearText && textController.text.isEmpty) {
-        textController.value = TextEditingValue(
-          text: draftText,
-          selection: TextSelection.collapsed(offset: draftText.length),
+      _acceptVoice = false;
+      draft = _text.value;
+      images = _images;
+      _text.clear();
+      setState(() => _images = const []);
+      final result = chat.send(draft.text, images: images);
+      if (enableHaptics) unawaited(HapticFeedback.lightImpact());
+      await result;
+    } catch (error) {
+      if (!mounted || version != chat.conversationVersion) return;
+      if (draft != null && _text.text.isEmpty) _text.value = draft;
+      if (images != null && _images.isEmpty) setState(() => _images = images!);
+      showAppSnackBar(context, formatChatError(error), bottomOffset: 78);
+    } finally {
+      _submitting = false;
+    }
+  }
+
+  void _handleVoiceUpdate() {
+    if (!_acceptVoice || !mounted) return;
+    final words = _voice.transcript.trim();
+    if (words != _lastTranscript) {
+      _lastTranscript = words;
+      final text = [
+        _voiceSeed,
+        words,
+      ].where((part) => part.isNotEmpty).join(' ');
+      _text.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    }
+    if (_voice.error.isNotEmpty && _voice.error != _lastVoiceError) {
+      _lastVoiceError = _voice.error;
+      showAppSnackBar(context, _voice.error, bottomOffset: 78);
+    }
+  }
+
+  Future<void> _toggleVoice() async {
+    if (_voice.isStarting) return;
+    if (_voice.isListening) {
+      try {
+        await _voice.stopListening();
+      } catch (_) {
+        if (mounted) {
+          showAppSnackBar(
+            context,
+            'Could not stop dictation.',
+            bottomOffset: 78,
+          );
+        }
+      }
+      return;
+    }
+    final version = widget.conversationVersion;
+    _voiceSeed = _text.text.trim();
+    _lastTranscript = '';
+    _lastVoiceError = '';
+    _voice.clearTranscript();
+    _acceptVoice = true;
+    try {
+      await _voice.startListening();
+      if (!mounted || version != widget.conversationVersion || !_acceptVoice) {
+        await _voice.cancelListening();
+        return;
+      }
+      if (!_voice.isAvailable) {
+        showAppSnackBar(
+          context,
+          'Voice input is unavailable.',
+          bottomOffset: 78,
         );
       }
-      if (!didSend &&
-          shouldRestoreImages &&
-          (chatProvider.imagesFileList?.isEmpty ?? true)) {
-        chatProvider.setImagesFileList(listValue: draftImages);
+    } catch (_) {
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          'Could not start voice input.',
+          bottomOffset: 78,
+        );
       }
-      showAppSnackBar(context, formatChatError(e), bottomOffset: 132);
+    }
+  }
+
+  Future<void> _restoreAndroidSelection() async {
+    final version = widget.conversationVersion;
+    try {
+      final result = await _picker.retrieveLostData();
+      if (!mounted || widget.conversationVersion != version) return;
+      if (result.files case final files?) {
+        await _addFiles(files, version);
+      } else if (result.exception != null) {
+        showAppSnackBar(
+          context,
+          'Could not recover the selected images.',
+          bottomOffset: 78,
+        );
+      }
+    } on MissingPluginException {
+      // The platform has no picker to recover from.
+    } catch (_) {
+      if (mounted && widget.conversationVersion == version) {
+        showAppSnackBar(
+          context,
+          'Could not recover the selected images.',
+          bottomOffset: 78,
+        );
+      }
+    }
+  }
+
+  Future<void> _pickImages() async {
+    if (_picking) return;
+    final version = widget.conversationVersion;
+    final remaining = ChatImage.maxCount - _images.length;
+    if (remaining <= 0) return;
+    setState(() => _picking = true);
+    try {
+      final platform = Theme.of(context).platform;
+      final source = await showAdaptiveActionSheet<_AttachmentSource>(
+        context: context,
+        title: 'Attach images',
+        actions: [
+          const AdaptiveSheetAction(
+            label: 'Photos',
+            value: _AttachmentSource.photos,
+          ),
+          if (!kIsWeb &&
+              (platform == TargetPlatform.iOS ||
+                  platform == TargetPlatform.android))
+            const AdaptiveSheetAction(
+              label: 'Camera',
+              value: _AttachmentSource.camera,
+            ),
+        ],
+      );
+      if (!mounted || widget.conversationVersion != version || source == null) {
+        return;
+      }
+      final List<XFile> picked;
+      if (source == _AttachmentSource.photos && remaining > 1) {
+        picked = await _picker.pickMultiImage(
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 90,
+          limit: remaining,
+          requestFullMetadata: false,
+        );
+      } else {
+        final file = await _picker.pickImage(
+          source: source == _AttachmentSource.camera
+              ? ImageSource.camera
+              : ImageSource.gallery,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 90,
+          requestFullMetadata: false,
+        );
+        picked = file == null ? [] : [file];
+      }
+      await _addFiles(picked, version);
+    } catch (error) {
+      if (mounted && widget.conversationVersion == version) {
+        final message = error is ChatException
+            ? error.message
+            : 'Could not attach images.';
+        showAppSnackBar(context, message, bottomOffset: 78);
+      }
     } finally {
-      voiceProvider.clearTranscript();
-      _voiceSeedText = '';
-      _lastTranscript = '';
+      if (mounted) setState(() => _picking = false);
     }
   }
 
-  Future<void> _submitCurrentDraft() async {
-    final hasImages = widget.chatProvider.imagesFileList != null &&
-        widget.chatProvider.imagesFileList!.isNotEmpty;
-    final canSend = textController.text.trim().isNotEmpty || hasImages;
-
-    if (widget.chatProvider.isLoading || !canSend) {
+  Future<void> _addFiles(List<XFile> files, int version) async {
+    if (files.isEmpty || !mounted || widget.conversationVersion != version) {
       return;
     }
-
-    await sendChatMessage(
-      message: textController.text,
-      chatProvider: widget.chatProvider,
-      isTextOnly: !hasImages,
-    );
-  }
-
-  Future<void> _pickFromPhotos() async {
-    try {
-      final pickedImages = await _picker.pickMultiImage(
-        maxHeight: 800,
-        maxWidth: 800,
-        imageQuality: 95,
-      );
-      _appendImages(pickedImages);
-    } catch (_) {
-      _showMediaError('Could not open photos');
-    }
-  }
-
-  Future<void> _pickFromCamera() async {
-    try {
-      final pickedImage = await _picker.pickImage(
-        source: ImageSource.camera,
-        maxHeight: 1400,
-        maxWidth: 1400,
-        imageQuality: 95,
-      );
-      if (pickedImage == null) {
-        return;
+    final selected = [..._images];
+    var bytes = selected.fold(0, (total, image) => total + image.bytes.length);
+    String? problem;
+    for (final file in files) {
+      if (selected.length >= ChatImage.maxCount) {
+        problem = 'You can attach up to 4 images.';
+        break;
       }
-      _appendImages([pickedImage]);
-    } catch (_) {
-      _showMediaError('Could not open camera');
-    }
-  }
-
-  void _appendImages(List<XFile> pickedImages) {
-    if (pickedImages.isEmpty) {
-      return;
-    }
-
-    final currentImages = widget.chatProvider.imagesFileList ?? const <XFile>[];
-    widget.chatProvider.setImagesFileList(
-      listValue: [
-        ...currentImages,
-        ...pickedImages,
-      ],
-    );
-  }
-
-  bool _supportsCamera(BuildContext context) {
-    final platform = Theme.of(context).platform;
-    return kIsWeb ||
-        platform == TargetPlatform.android ||
-        platform == TargetPlatform.iOS;
-  }
-
-  void _showMediaError(String message) {
-    if (!mounted) {
-      return;
+      try {
+        final image = await ChatImage.fromFile(file);
+        if (bytes + image.bytes.length > ChatImage.maxRequestBytes) {
+          problem = 'Attachments can total up to 10 MB.';
+          continue;
+        }
+        selected.add(image);
+        bytes += image.bytes.length;
+      } catch (error) {
+        problem = error is ChatException
+            ? error.message
+            : 'Some images could not be read.';
+      }
     }
 
-    showAppSnackBar(context, message, bottomOffset: 132);
+    if (!mounted || widget.conversationVersion != version) return;
+    setState(() => _images = selected);
+    if (problem != null) showAppSnackBar(context, problem, bottomOffset: 78);
   }
 
-  Future<void> _showAttachmentOptions({
-    required bool hasImages,
-  }) async {
-    final action = await showAdaptiveActionSheet<_AttachmentAction>(
-      context: context,
-      title: 'Add image',
-      message: hasImages
-          ? 'Choose a source or clear selected images.'
-          : 'Choose a source.',
-      actions: [
-        const AdaptiveSheetAction(
-          label: 'Photos',
-          value: _AttachmentAction.photos,
-        ),
-        if (_supportsCamera(context))
-          const AdaptiveSheetAction(
-            label: 'Camera',
-            value: _AttachmentAction.camera,
-          ),
-        if (hasImages)
-          const AdaptiveSheetAction(
-            label: 'Clear selected',
-            value: _AttachmentAction.clear,
-            isDestructive: true,
-          ),
-      ],
-    );
-
-    switch (action) {
-      case _AttachmentAction.photos:
-        await _pickFromPhotos();
-        return;
-      case _AttachmentAction.camera:
-        await _pickFromCamera();
-        return;
-      case _AttachmentAction.clear:
-        widget.chatProvider.clearDraft();
-        return;
-      case null:
-        return;
+  KeyEventResult _handleEnter(KeyEvent event, bool sendWithEnter) {
+    final keys = HardwareKeyboard.instance;
+    final composing = _text.value.composing;
+    if (!sendWithEnter ||
+        event is! KeyDownEvent ||
+        (event.logicalKey != LogicalKeyboardKey.enter &&
+            event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+        keys.isShiftPressed ||
+        keys.isControlPressed ||
+        keys.isAltPressed ||
+        keys.isMetaPressed ||
+        (composing.isValid && !composing.isCollapsed)) {
+      return KeyEventResult.ignored;
     }
+    unawaited(_submit());
+    return KeyEventResult.handled;
   }
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final settingsProvider = context.watch<SettingsProvider>();
-    final voiceProvider = context.watch<VoiceInputProvider>();
-    final hasVoiceAction = settingsProvider.enableVoiceInput;
-    final isListening = voiceProvider.isListening;
-    final voiceLevel = voiceProvider.soundLevel;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final motionDuration =
-        settingsProvider.reduceMotion ? Duration.zero : AppMotion.regular;
-    final filledTonalStyle = IconButton.styleFrom(
-      backgroundColor: isDark
-          ? colorScheme.primaryContainer.withValues(alpha: 0.92)
-          : colorScheme.primaryContainer.withValues(alpha: 0.84),
-      foregroundColor: colorScheme.onPrimaryContainer,
-    );
-    bool hasImages = widget.chatProvider.imagesFileList != null &&
-        widget.chatProvider.imagesFileList!.isNotEmpty;
-    final canSend = textController.text.trim().isNotEmpty || hasImages;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(30),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerLow.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(
-              color: colorScheme.outlineVariant.withValues(alpha: 0.38),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: colorScheme.shadow.withValues(alpha: 0.12),
-                blurRadius: 28,
-                offset: const Offset(0, 16),
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final settings = context.watch<SettingsProvider>();
+    final (listening, startingVoice) = context
+        .select<VoiceInputProvider, (bool, bool)>(
+          (voice) => (voice.isListening, voice.isStarting),
+        );
+    return Material(
+      color: colors.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(26),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: AnimatedSize(
+        duration:
+            settings.reduceMotion || MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : AppMotion.regular,
+        alignment: Alignment.bottomCenter,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (listening)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Row(
+                  children: [
+                    Icon(Icons.graphic_eq, size: 18),
+                    SizedBox(width: 8),
+                    Text('Listening…'),
+                  ],
+                ),
               ),
-            ],
-          ),
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(30),
-            child: AnimatedSize(
-              duration: motionDuration,
-              curve: AppMotion.curve,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+            if (_images.isNotEmpty)
+              PreviewImagesWidget.draft(
+                images: _images,
+                height: widget.compact ? 66 : 96,
+                onRemoveAt: _picking
+                    ? null
+                    : (index) => setState(() {
+                        _images = [..._images]..removeAt(index);
+                      }),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  AnimatedSwitcher(
-                    duration: motionDuration,
-                    switchInCurve: AppMotion.curve,
-                    switchOutCurve: AppMotion.curve,
-                    child: isListening
-                        ? _ListeningBanner(
-                            key: const ValueKey('listening-banner'),
-                            level: voiceLevel,
-                          )
-                        : const SizedBox.shrink(
-                            key: ValueKey('idle-banner'),
-                          ),
+                  IconButton.filledTonal(
+                    tooltip: 'Attach images',
+                    onPressed: _picking || _images.length >= ChatImage.maxCount
+                        ? null
+                        : _pickImages,
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
                   ),
-                  AnimatedSwitcher(
-                    duration: motionDuration,
-                    switchInCurve: AppMotion.curve,
-                    switchOutCurve: AppMotion.curve,
-                    child: hasImages
-                        ? PreviewImagesWidget(
-                            key: ValueKey(
-                              widget.chatProvider.imagesFileList?.length ?? 0,
-                            ),
-                            canRemove: true,
-                            onRemoveAt: widget.chatProvider.removeImageAt,
-                          )
-                        : const SizedBox.shrink(
-                            key: ValueKey('no-preview-images'),
-                          ),
-                  ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 0, 0, 8),
-                        child: IconButton.filledTonal(
-                          style: filledTonalStyle,
-                          onPressed: () =>
-                              _showAttachmentOptions(hasImages: hasImages),
-                          icon: Icon(
-                            hasImages
-                                ? CupertinoIcons.photo_on_rectangle
-                                : CupertinoIcons.photo,
+                  Expanded(
+                    child: Focus(
+                      canRequestFocus: false,
+                      onKeyEvent: (_, event) =>
+                          _handleEnter(event, settings.sendWithEnter),
+                      child: TextField(
+                        focusNode: _focus,
+                        controller: _text,
+                        autofocus: settings.autoFocusComposer,
+                        keyboardType: TextInputType.multiline,
+                        textInputAction: settings.sendWithEnter
+                            ? TextInputAction.send
+                            : TextInputAction.newline,
+                        minLines: 1,
+                        maxLines: widget.compact ? 2 : 4,
+                        textCapitalization: TextCapitalization.sentences,
+                        onSubmitted: settings.sendWithEnter
+                            ? (_) => _submit()
+                            : null,
+                        decoration: const InputDecoration(
+                          hintText: 'Message',
+                          filled: false,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 13,
                           ),
                         ),
                       ),
-                      Expanded(
-                        child: TextField(
-                          focusNode: textFieldFocus,
-                          controller: textController,
-                          autofocus: settingsProvider.autoFocusComposer &&
-                              widget.chatProvider.inChatMessages.isEmpty,
-                          keyboardType: TextInputType.multiline,
-                          textInputAction: TextInputAction.send,
-                          minLines: 1,
-                          maxLines: 5,
-                          textCapitalization: TextCapitalization.sentences,
-                          onSubmitted: settingsProvider.sendWithEnter
-                              ? (_) => _submitCurrentDraft()
-                              : null,
-                          decoration: const InputDecoration(
-                            hintText: 'Message',
-                            border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
-                            disabledBorder: InputBorder.none,
-                            errorBorder: InputBorder.none,
-                            focusedErrorBorder: InputBorder.none,
-                            filled: false,
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 18,
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (hasVoiceAction)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: IconButton.filledTonal(
-                            style: filledTonalStyle,
-                            onPressed: widget.chatProvider.isLoading
-                                ? null
-                                : _toggleVoiceInput,
-                            icon: Icon(
-                              isListening
-                                  ? CupertinoIcons.stop_fill
-                                  : CupertinoIcons.mic_fill,
-                            ),
-                          ),
-                        ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8, bottom: 8),
-                        child: IconButton.filled(
-                          onPressed: widget.chatProvider.isLoading || !canSend
-                              ? null
-                              : _submitCurrentDraft,
-                          icon: widget.chatProvider.isLoading
-                              ? SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.2,
-                                    color: colorScheme.onPrimary,
-                                  ),
-                                )
-                              : const Icon(CupertinoIcons.arrow_up),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
+                  if (settings.enableVoiceInput || listening)
+                    IconButton(
+                      tooltip: listening ? 'Stop dictation' : 'Dictate message',
+                      onPressed: startingVoice || (widget.isBusy && !listening)
+                          ? null
+                          : _toggleVoice,
+                      icon: Icon(
+                        listening ? Icons.mic_off_outlined : Icons.mic_none,
+                      ),
+                    ),
+                  const SizedBox(width: 4),
+                  if (widget.isGenerating)
+                    IconButton.filled(
+                      tooltip: 'Stop generating',
+                      onPressed: widget.canStop
+                          ? context.read<ChatProvider>().stopGeneration
+                          : null,
+                      icon: const Icon(Icons.stop_rounded),
+                    )
+                  else
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _text,
+                      builder: (context, value, child) => IconButton.filled(
+                        tooltip: 'Send message',
+                        onPressed: widget.isBusy || _picking || !_hasDraft
+                            ? null
+                            : _submit,
+                        icon: const Icon(Icons.arrow_upward_rounded),
+                      ),
+                    ),
                 ],
               ),
             ),
-          ),
+          ],
         ),
-      ),
-    );
-  }
-}
-
-class _ListeningBanner extends StatelessWidget {
-  const _ListeningBanner({
-    super.key,
-    required this.level,
-  });
-
-  final double level;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final normalizedLevel = (level.abs() / 10).clamp(0.08, 1.0);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: colorScheme.primaryContainer.withValues(alpha: 0.8),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            CupertinoIcons.waveform,
-            size: 18,
-            color: colorScheme.onPrimaryContainer,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                minHeight: 6,
-                value: normalizedLevel,
-                backgroundColor:
-                    colorScheme.onPrimaryContainer.withValues(alpha: 0.15),
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

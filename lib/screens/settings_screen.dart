@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,9 +9,10 @@ import 'package:chatbotapp/providers/user_profile_provider.dart';
 import 'package:chatbotapp/utilities/animated_dialog.dart';
 import 'package:chatbotapp/utilities/app_motion.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/app_icon_button.dart';
 import 'package:chatbotapp/widgets/app_screen_scaffold.dart';
-import 'package:chatbotapp/widgets/build_display_image.dart';
+import 'package:chatbotapp/widgets/gemini_connection_tile.dart';
 import 'package:chatbotapp/widgets/profile_avatar.dart';
 import 'package:chatbotapp/widgets/settings_tile.dart';
 import 'package:chatbotapp/widgets/theme_mode_selector.dart';
@@ -28,8 +29,11 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _nameController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
-  File? _draftImageFile;
+  Uint8List? _draftAvatar;
   bool _isEditingProfile = false;
+  bool _isPickingAvatar = false;
+  bool _isSavingProfile = false;
+  int _profileEditVersion = 0;
 
   @override
   void dispose() {
@@ -38,63 +42,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _pickImage() async {
+    if (_isPickingAvatar || _isSavingProfile) return;
+    final version = _profileEditVersion;
+    setState(() => _isPickingAvatar = true);
     try {
       final pickedImage = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxHeight: 1200,
-        maxWidth: 1200,
-        imageQuality: 95,
+        maxHeight: 800,
+        maxWidth: 800,
+        imageQuality: 90,
+        requestFullMetadata: false,
       );
-      if (pickedImage == null) {
-        return;
+      if (pickedImage == null) return;
+      if (await pickedImage.length() > UserProfileProvider.maxAvatarBytes) {
+        throw const ChatException('Choose a profile photo up to 4 MB.');
       }
-
-      setState(() {
-        _draftImageFile = File(pickedImage.path);
-      });
-    } catch (_) {
-      if (!mounted) {
-        return;
+      final bytes = await pickedImage.readAsBytes();
+      if (!mounted || _profileEditVersion != version) return;
+      if (bytes.isEmpty || bytes.length > UserProfileProvider.maxAvatarBytes) {
+        throw const ChatException('Choose a profile photo up to 4 MB.');
       }
-      showAppSnackBar(context, 'Could not open photos');
+      setState(() => _draftAvatar = bytes);
+    } catch (error) {
+      if (mounted && _profileEditVersion == version) {
+        showAppSnackBar(
+          context,
+          error is ChatException
+              ? error.message
+              : 'Could not open the profile photo.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPickingAvatar = false);
     }
   }
 
   void _beginEditing(UserProfileProvider userProfile) {
     setState(() {
       _isEditingProfile = true;
+      _profileEditVersion++;
       _nameController.text = userProfile.name;
-      _draftImageFile = null;
+      _draftAvatar = null;
     });
   }
 
   void _cancelEditing() {
     setState(() {
       _isEditingProfile = false;
-      _draftImageFile = null;
+      _profileEditVersion++;
+      _draftAvatar = null;
     });
   }
 
   Future<void> _saveProfile(UserProfileProvider userProfile) async {
+    if (_isSavingProfile || _isPickingAvatar) return;
     final enableHaptics = context.read<SettingsProvider>().enableHaptics;
-    final imagePath = _draftImageFile?.path ?? userProfile.imagePath;
-
-    await userProfile.saveProfile(
-      name: _nameController.text,
-      imagePath: imagePath,
-    );
-
-    if (!mounted) {
-      return;
+    setState(() => _isSavingProfile = true);
+    try {
+      await userProfile.saveProfile(
+        name: _nameController.text,
+        newAvatar: _draftAvatar,
+      );
+      if (!mounted) return;
+      _cancelEditing();
+      showAppSnackBar(context, 'Profile saved');
+      if (enableHaptics)
+        unawaited(HapticFeedback.selectionClick().onError((_, __) {}));
+    } catch (error) {
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          error is ChatException
+              ? error.message
+              : 'Could not save your profile.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSavingProfile = false);
     }
+  }
 
-    if (enableHaptics) {
-      await HapticFeedback.selectionClick();
-    }
-
-    _cancelEditing();
-    if (mounted) {
-      showAppSnackBar(context, 'Saved');
+  Future<void> _savePreference(Future<void> write) async {
+    try {
+      await write;
+    } catch (_) {
+      if (mounted) showAppSnackBar(context, 'Could not save the setting.');
     }
   }
 
@@ -102,7 +134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final confirmed = await showAnimatedConfirmationDialog(
       context: context,
       title: 'Clear history',
-      content: 'Remove all chats?',
+      content: 'Delete all chats saved on this device?',
       actionText: 'Clear',
     );
 
@@ -110,7 +142,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    await context.read<ChatProvider>().clearAllChats();
+    try {
+      await context.read<ChatProvider>().clearAllChats();
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
+    }
   }
 
   @override
@@ -118,16 +154,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final settingsProvider = context.watch<SettingsProvider>();
     final userProfile = context.watch<UserProfileProvider>();
     final colorScheme = Theme.of(context).colorScheme;
-    final motionDuration =
-        settingsProvider.reduceMotion ? Duration.zero : AppMotion.regular;
+    final motionDuration = settingsProvider.reduceMotion
+        ? Duration.zero
+        : AppMotion.regular;
 
     return AppScreenScaffold(
-      padding: const EdgeInsets.fromLTRB(
-        16,
-        10,
-        16,
-        0,
-      ),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -140,14 +172,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onTap: () => Navigator.of(context).pop(),
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  'Settings',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
+                Text('Settings', style: Theme.of(context).textTheme.titleLarge),
               ],
             ),
             const SizedBox(height: 16),
+            const GeminiConnectionTile(),
+            const SizedBox(height: 14),
             Card(
+              semanticContainer: false,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(28),
                 side: BorderSide(
@@ -163,18 +195,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     children: [
                       Row(
                         children: [
-                          _isEditingProfile
-                              ? BuildDisplayImage(
-                                  file: _draftImageFile,
-                                  userImage: userProfile.imagePath,
-                                  onPressed: _pickImage,
-                                  radius: 34,
-                                )
-                              : ProfileAvatar(
-                                  name: userProfile.name,
-                                  imagePath: userProfile.imagePath,
-                                  radius: 34,
-                                ),
+                          ProfileAvatar(
+                            name: userProfile.name,
+                            photo: _draftAvatar ?? userProfile.avatarBytes,
+                            onPickPhoto: _isEditingProfile && !_isSavingProfile
+                                ? _pickImage
+                                : null,
+                            radius: 34,
+                          ),
                           const SizedBox(width: 14),
                           Expanded(
                             child: Column(
@@ -182,17 +210,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               children: [
                                 Text(
                                   userProfile.name,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleLarge
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleLarge
                                       ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
                                   'Profile',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
+                                  style: Theme.of(context).textTheme.bodyMedium
                                       ?.copyWith(
                                         color: colorScheme.onSurfaceVariant,
                                       ),
@@ -201,6 +227,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                           AppIconButton(
+                            isEnabled: !_isSavingProfile,
                             onTap: _isEditingProfile
                                 ? _cancelEditing
                                 : () => _beginEditing(userProfile),
@@ -215,24 +242,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const SizedBox(height: 16),
                         TextField(
                           controller: _nameController,
+                          enabled: !_isSavingProfile,
                           textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                            labelText: 'Name',
-                          ),
+                          decoration: const InputDecoration(labelText: 'Name'),
                         ),
                         const SizedBox(height: 12),
                         Row(
                           children: [
                             Expanded(
                               child: OutlinedButton(
-                                onPressed: _cancelEditing,
+                                onPressed: _isSavingProfile
+                                    ? null
+                                    : _cancelEditing,
                                 child: const Text('Cancel'),
                               ),
                             ),
                             const SizedBox(width: 10),
                             Expanded(
                               child: FilledButton(
-                                onPressed: () => _saveProfile(userProfile),
+                                onPressed: _isSavingProfile || _isPickingAvatar
+                                    ? null
+                                    : () => _saveProfile(userProfile),
                                 child: const Text('Save'),
                               ),
                             ),
@@ -248,17 +278,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const _SectionLabel(title: 'Appearance'),
             const SizedBox(height: 10),
             Card(
+              semanticContainer: false,
               child: ThemeModeSelector(
                 value: settingsProvider.appThemeMode,
-                onChanged: (value) {
-                  settingsProvider.setThemeMode(value: value);
-                },
+                onChanged: (value) => _savePreference(
+                  settingsProvider.setThemeMode(value: value),
+                ),
               ),
             ),
             const SizedBox(height: 18),
             const _SectionLabel(title: 'Interaction'),
             const SizedBox(height: 10),
             Card(
+              semanticContainer: false,
               child: Column(
                 children: [
                   SettingsTile(
@@ -266,9 +298,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Haptics',
                     subtitle: 'Feedback on actions',
                     value: settingsProvider.enableHaptics,
-                    onChanged: (value) {
-                      settingsProvider.toggleHaptics(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleHaptics(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -276,9 +308,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Voice input',
                     subtitle: 'Use speech in chat',
                     value: settingsProvider.enableVoiceInput,
-                    onChanged: (value) {
-                      settingsProvider.toggleVoiceInput(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleVoiceInput(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -286,9 +318,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Auto-scroll',
                     subtitle: 'Follow new messages',
                     value: settingsProvider.autoScroll,
-                    onChanged: (value) {
-                      settingsProvider.toggleAutoScroll(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleAutoScroll(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -296,9 +328,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Send with Return',
                     subtitle: 'Press enter to send',
                     value: settingsProvider.sendWithEnter,
-                    onChanged: (value) {
-                      settingsProvider.toggleSendWithEnter(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleSendWithEnter(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -306,9 +338,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Reduce motion',
                     subtitle: 'Use simpler transitions',
                     value: settingsProvider.reduceMotion,
-                    onChanged: (value) {
-                      settingsProvider.toggleReduceMotion(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleReduceMotion(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -316,9 +348,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Auto-focus composer',
                     subtitle: 'Focus message box on open',
                     value: settingsProvider.autoFocusComposer,
-                    onChanged: (value) {
-                      settingsProvider.toggleAutoFocusComposer(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleAutoFocusComposer(value: value),
+                    ),
                   ),
                 ],
               ),
@@ -327,16 +359,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const _SectionLabel(title: 'Data'),
             const SizedBox(height: 10),
             Card(
+              semanticContainer: false,
               child: Column(
                 children: [
                   SettingsTile(
                     icon: CupertinoIcons.archivebox_fill,
                     title: 'Save history',
-                    subtitle: 'Keep chats on this device',
+                    subtitle:
+                        'Store conversations and their images on this device',
                     value: settingsProvider.saveChatHistory,
-                    onChanged: (value) {
-                      settingsProvider.toggleSaveChatHistory(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleSaveChatHistory(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   SettingsTile(
@@ -344,9 +378,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: 'Starter prompts',
                     subtitle: 'Show prompt suggestions',
                     value: settingsProvider.showStarterPrompts,
-                    onChanged: (value) {
-                      settingsProvider.toggleShowStarterPrompts(value: value);
-                    },
+                    onChanged: (value) => _savePreference(
+                      settingsProvider.toggleShowStarterPrompts(value: value),
+                    ),
                   ),
                   const Divider(height: 1),
                   _ActionTile(
@@ -375,18 +409,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 class _SectionLabel extends StatelessWidget {
-  const _SectionLabel({
-    required this.title,
-  });
+  const _SectionLabel({required this.title});
 
   final String title;
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      title,
-      style: Theme.of(context).textTheme.titleMedium,
-    );
+    return Text(title, style: Theme.of(context).textTheme.titleMedium);
   }
 }
 
@@ -408,8 +437,9 @@ class _ActionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final iconColor =
-        isDestructive ? colorScheme.error : colorScheme.onPrimaryContainer;
+    final iconColor = isDestructive
+        ? colorScheme.error
+        : colorScheme.onPrimaryContainer;
     final iconBackground = isDestructive
         ? colorScheme.errorContainer
         : colorScheme.primaryContainer;
@@ -438,9 +468,8 @@ class _ActionTile extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: colorScheme.onSurfaceVariant),
                   ),
                 ],
               ),

@@ -19,12 +19,44 @@ class ChatHistory extends HiveObject {
   @HiveField(4)
   final DateTime timestamp;
 
-  // constructor
+  @HiveField(5)
+  final String? title;
+
+  @HiveField(6, defaultValue: false)
+  final bool isPinned;
+
+  @HiveField(7)
+  final List<Map>? transcript;
+
+  @HiveField(8)
+  final String? mode;
+
   ChatHistory({
     required this.chatId,
     required this.prompt,
     required this.response,
     required this.imagesUrls,
     required this.timestamp,
+    this.title,
+    this.isPinned = false,
+    this.transcript,
+    this.mode,
   });
+
+  String get displayTitle {
+    final value = (title ?? prompt).replaceAll(RegExp(r'\s+'), ' ').trim();
+    return value.isEmpty ? 'Conversation' : value;
+  }
+
+  ChatHistory withDetails({String? title, bool? isPinned}) => ChatHistory(
+        chatId: chatId,
+        prompt: prompt,
+        response: response,
+        imagesUrls: imagesUrls,
+        timestamp: timestamp,
+        title: title ?? this.title,
+        isPinned: isPinned ?? this.isPinned,
+        transcript: transcript,
+        mode: mode,
+      );
 }

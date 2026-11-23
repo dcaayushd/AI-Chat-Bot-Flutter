@@ -1,41 +1,20 @@
-String formatChatError(Object error) {
-  if (error case StateError(:final message)) {
-    return message;
-  }
+import 'dart:async';
 
-  final text = error.toString().toLowerCase();
+import 'package:http/http.dart' as http;
 
-  if (text.contains('operation timed out') ||
-      text.contains('timeoutexception')) {
-    return 'Request timed out. Check your connection and try again.';
-  }
+class ChatException implements Exception {
+  const ChatException(this.message);
 
-  if (text.contains('socketexception') ||
-      text.contains('clientexception') ||
-      text.contains('failed host lookup') ||
-      text.contains('connection closed')) {
-    return 'Could not reach Gemini. Check your network and try again.';
-  }
+  final String message;
 
-  if (text.contains('api key')) {
-    return 'Add your Gemini API key to continue.';
-  }
-
-  return 'Something went wrong. Please try again.';
+  @override
+  String toString() => message;
 }
 
-bool shouldRetryRequest(Object error) {
-  final text = error.toString().toLowerCase();
-
-  if (text.contains('api key') ||
-      text.contains('permission') ||
-      text.contains('not found')) {
-    return false;
-  }
-
-  return text.contains('operation timed out') ||
-      text.contains('timeoutexception') ||
-      text.contains('socketexception') ||
-      text.contains('failed host lookup') ||
-      text.contains('connection closed');
-}
+String formatChatError(Object error) => switch (error) {
+      ChatException(:final message) => message,
+      TimeoutException() => 'Gemini took too long to respond. Try again.',
+      http.ClientException() =>
+        'Could not reach Gemini. Check your connection.',
+      _ => 'Something went wrong. Please try again.',
+    };

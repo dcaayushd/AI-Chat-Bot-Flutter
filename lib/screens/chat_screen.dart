@@ -1,21 +1,20 @@
-import 'package:cupertino_ui/cupertino_ui.dart';
-import 'package:material_ui/material_ui.dart';
-import 'package:chatbotapp/apis/api_service.dart';
+import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/providers/settings_provider.dart';
 import 'package:chatbotapp/providers/user_profile_provider.dart';
-import 'package:chatbotapp/providers/voice_input_provider.dart';
 import 'package:chatbotapp/screens/chat_history_screen.dart';
 import 'package:chatbotapp/screens/settings_screen.dart';
 import 'package:chatbotapp/utilities/animated_dialog.dart';
-import 'package:chatbotapp/utilities/app_motion.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/app_screen_scaffold.dart';
+import 'package:chatbotapp/widgets/bottom_chat_field.dart';
 import 'package:chatbotapp/widgets/chat/chat_empty_state.dart';
 import 'package:chatbotapp/widgets/chat/chat_header.dart';
 import 'package:chatbotapp/widgets/chat_messages.dart';
-import 'package:chatbotapp/widgets/bottom_chat_field.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -26,309 +25,243 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final ScrollController _scrollController = ScrollController();
-  int _lastMessageCount = 0;
-  bool _showJumpToLatest = false;
+  final _scroll = ScrollController();
+  final _composer = GlobalKey<BottomChatFieldState>();
+  bool _followLatest = true;
+  bool _jumpVisible = false;
+  bool _scrollQueued = false;
+  bool _autoScroll = true;
+  int _version = 0;
 
   @override
   void initState() {
-    _scrollController.addListener(_syncJumpToLatestButton);
     super.initState();
+    _scroll.addListener(_handleScroll);
   }
 
   @override
   void dispose() {
-    _scrollController.removeListener(_syncJumpToLatestButton);
-    _scrollController.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
-  bool _shouldShowJumpToLatest() {
-    if (!_scrollController.hasClients) {
-      return false;
-    }
-
-    final position = _scrollController.position;
-    final distanceToBottom = position.maxScrollExtent - position.pixels;
-    return position.maxScrollExtent > 180 && distanceToBottom > 56;
+  void _handleScroll() {
+    if (!_scroll.hasClients || !_scroll.position.hasContentDimensions) return;
+    _followLatest = _scroll.position.extentAfter < 72;
+    _syncJumpButton();
   }
 
-  void _syncJumpToLatestButton() {
-    if (!mounted) {
+  void _syncJumpButton() {
+    if (!mounted ||
+        !_scroll.hasClients ||
+        !_scroll.position.hasContentDimensions) {
       return;
     }
-
-    final shouldShow = _shouldShowJumpToLatest();
-    if (shouldShow != _showJumpToLatest) {
-      setState(() {
-        _showJumpToLatest = shouldShow;
-      });
-    }
+    final show = _scroll.position.extentAfter >= 72;
+    if (show != _jumpVisible) setState(() => _jumpVisible = show);
   }
 
-  void _refreshJumpToLatestButton() {
+  void _queueScrollUpdate() {
+    if (_scrollQueued) return;
+    _scrollQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _syncJumpToLatestButton();
-    });
-  }
-
-  void _resetJumpToLatestState() {
-    _lastMessageCount = 0;
-    if (_showJumpToLatest && mounted) {
-      setState(() {
-        _showJumpToLatest = false;
-      });
-    } else {
-      _showJumpToLatest = false;
-    }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.jumpTo(0);
-      }
-    });
-  }
-
-  void _scrollToBottom() {
-    final reduceMotion = context.read<SettingsProvider>().reduceMotion;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) {
+      _scrollQueued = false;
+      if (!mounted ||
+          !_scroll.hasClients ||
+          !_scroll.position.hasContentDimensions) {
         return;
       }
-
-      final maxScrollExtent = _scrollController.position.maxScrollExtent;
-
-      if (reduceMotion) {
-        _scrollController.jumpTo(maxScrollExtent);
-        _syncJumpToLatestButton();
-        return;
+      final position = _scroll.position;
+      if (_autoScroll && _followLatest && position.extentAfter > 0) {
+        _scroll.jumpTo(position.maxScrollExtent);
       }
-
-      _scrollController
-          .animateTo(
-            maxScrollExtent,
-            duration: AppMotion.scroll,
-            curve: AppMotion.curve,
-          )
-          .whenComplete(_syncJumpToLatestButton);
+      _syncJumpButton();
     });
+    // Metrics notifications can arrive after the current frame has ended.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  void _syncAutoScroll({
-    required ChatProvider chatProvider,
-    required SettingsProvider settingsProvider,
-  }) {
-    if (!chatProvider.hasMessages) {
-      _resetJumpToLatestState();
-      return;
-    }
-
-    if (!settingsProvider.autoScroll) {
-      _lastMessageCount = chatProvider.messageCount;
-      _refreshJumpToLatestButton();
-      return;
-    }
-
-    if (chatProvider.messageCount != _lastMessageCount) {
-      _lastMessageCount = chatProvider.messageCount;
-      if (chatProvider.messageCount > 0) {
-        _scrollToBottom();
-      }
-    }
-
-    _refreshJumpToLatestButton();
+  void _jumpToLatest() {
+    _followLatest = true;
+    if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    _queueScrollUpdate();
   }
 
-  String _modelLabel(String modelType) {
-    return modelType.contains('flash') ? 'Flash' : 'Vision';
-  }
+  void _useDraft(String text) => _composer.currentState?.useDraft(text);
 
-  Future<void> _startNewChat(ChatProvider chatProvider) async {
-    if (!chatProvider.hasMessages) {
-      await chatProvider.prepareChatRoom(isNewChat: true, chatID: '');
-      return;
+  Future<void> _newChat(ChatProvider chat) async {
+    if (chat.hasMessages && (chat.historyOff || chat.storageError != null)) {
+      final confirmed = await showAnimatedConfirmationDialog(
+        context: context,
+        title: 'Start a new chat?',
+        content: 'The current conversation has unsaved messages.',
+        actionText: 'Start new chat',
+      );
+      if (!mounted || !confirmed) return;
     }
-
-    final confirmed = await showAnimatedConfirmationDialog(
-      context: context,
-      title: 'New chat',
-      content: 'Start fresh?',
-      actionText: 'Start',
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    await chatProvider.prepareChatRoom(isNewChat: true, chatID: '');
-    _resetJumpToLatestState();
-  }
-
-  Future<void> _sendSuggestion(String prompt) async {
-    final chatProvider = context.read<ChatProvider>();
-
     try {
-      await chatProvider.sentMessage(message: prompt, isTextOnly: true);
+      await chat.newChat();
     } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      showAppSnackBar(context, formatChatError(error), bottomOffset: 132);
+      if (mounted) showAppSnackBar(context, formatChatError(error));
     }
   }
 
-  Future<void> _openPage(Widget page) async {
-    final reduceMotion = context.read<SettingsProvider>().reduceMotion;
+  Future<void> _retry() async {
+    try {
+      await context.read<ChatProvider>().retryLastReply();
+    } catch (error) {
+      if (mounted) {
+        showAppSnackBar(context, formatChatError(error), bottomOffset: 78);
+      }
+    }
+  }
+
+  Future<void> _copyChat(ChatProvider chat) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: chat.exportCurrentChat()));
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          'Conversation copied as Markdown',
+          bottomOffset: 78,
+        );
+      }
+    } catch (_) {
+      if (mounted) showAppSnackBar(context, 'Could not copy the conversation.');
+    }
+  }
+
+  void _openPage(Widget page) {
+    _composer.currentState?.cancelDictation();
+    final reduceMotion =
+        context.read<SettingsProvider>().reduceMotion ||
+        MediaQuery.disableAnimationsOf(context);
     final route = reduceMotion
         ? PageRouteBuilder<void>(
             pageBuilder: (context, animation, secondaryAnimation) => page,
             transitionDuration: Duration.zero,
             reverseTransitionDuration: Duration.zero,
           )
-        : CupertinoPageRoute<void>(
-            builder: (context) => page,
-          );
-
-    await Navigator.of(context).push(route);
+        : CupertinoPageRoute<void>(builder: (context) => page);
+    Navigator.of(context).push(route);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer3<ChatProvider, SettingsProvider, VoiceInputProvider>(
-      builder: (context, chatProvider, settingsProvider, voiceProvider, child) {
-        _syncAutoScroll(
-          chatProvider: chatProvider,
-          settingsProvider: settingsProvider,
-        );
-        final userName = context.watch<UserProfileProvider>().firstName;
-        final showJumpButton = chatProvider.hasMessages && _showJumpToLatest;
-        final motionDuration =
-            settingsProvider.reduceMotion ? Duration.zero : AppMotion.regular;
-        final bottomInset = homeIndicatorSpacing(
-          context,
-          base: 12,
-          factor: 0.12,
-          maxExtra: 6,
-        );
-        final draftImages = chatProvider.imagesFileList?.isNotEmpty ?? false;
-        final composerInset = bottomInset +
-            92 +
-            (draftImages ? 112 : 0) +
-            (voiceProvider.isListening ? 44 : 0);
-        final contentBottomPadding =
-            composerInset > 24 ? composerInset - 24 : composerInset;
+    final settings = context.watch<SettingsProvider>();
+    final userName = context.select<UserProfileProvider, String>(
+      (profile) => profile.firstName,
+    );
+    final chat = context.read<ChatProvider>();
+    _autoScroll = settings.autoScroll;
 
+    return Selector<
+      ChatProvider,
+      ({
+        bool hasMessages,
+        bool isConfigured,
+        bool historyOff,
+        bool isBusy,
+        bool isGenerating,
+        bool canStop,
+        ChatMode mode,
+        int version,
+      })
+    >(
+      selector: (context, chat) => (
+        hasMessages: chat.hasMessages,
+        isConfigured: chat.isConfigured,
+        historyOff: chat.historyOff,
+        isBusy: chat.isBusy,
+        isGenerating: chat.isGenerating,
+        canStop: chat.canStop,
+        mode: chat.mode,
+        version: chat.conversationVersion,
+      ),
+      builder: (context, state, _) {
+        if (_version != state.version) {
+          _version = state.version;
+          _followLatest = true;
+          _jumpVisible = false;
+          _queueScrollUpdate();
+        }
+        final bottomPadding = MediaQuery.paddingOf(context).bottom;
+        final roomHeight =
+            MediaQuery.sizeOf(context).height -
+            MediaQuery.viewInsetsOf(context).bottom;
         return AppScreenScaffold(
-          padding: const EdgeInsets.fromLTRB(
-            16,
-            10,
-            16,
-            0,
-          ),
+          maxContentWidth: 880,
+          padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPadding + 10),
           child: Column(
             children: [
               ChatHeader(
                 userName: userName,
-                modelLabel: _modelLabel(chatProvider.modelType),
-                canStartNewChat: chatProvider.hasMessages,
+                mode: state.mode,
+                historyOff: state.historyOff,
+                isBusy: state.isBusy,
+                onModeChanged: chat.setMode,
                 onOpenHistory: () => _openPage(const ChatHistoryScreen()),
                 onOpenSettings: () => _openPage(const SettingsScreen()),
-                onNewChat: () => _startNewChat(chatProvider),
+                onNewChat: () => _newChat(chat),
+                onCopyChat: state.hasMessages ? () => _copyChat(chat) : null,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 10),
               Expanded(
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Positioned.fill(
-                      child: AnimatedSwitcher(
-                        duration: motionDuration,
-                        child: chatProvider.hasMessages
-                            ? ChatMessages(
-                                key: const ValueKey('chat-messages'),
-                                scrollController: _scrollController,
-                                chatProvider: chatProvider,
-                                bottomPadding: contentBottomPadding,
-                              )
-                            : Padding(
-                                key: const ValueKey('chat-empty'),
-                                padding: EdgeInsets.only(
-                                  bottom: contentBottomPadding,
+                child: state.hasMessages
+                    ? Stack(
+                        children: [
+                          Positioned.fill(
+                            child:
+                                NotificationListener<ScrollMetricsNotification>(
+                                  onNotification: (notice) {
+                                    if (notice.depth == 0) _queueScrollUpdate();
+                                    return false;
+                                  },
+                                  child: ChatMessages(
+                                    key: ValueKey(state.version),
+                                    scrollController: _scroll,
+                                    onRetry: _retry,
+                                    onUseDraft: _useDraft,
+                                  ),
                                 ),
-                                child: ChatEmptyState(
-                                  apiConfigured: ApiService.isConfigured,
-                                  showStarterPrompts:
-                                      settingsProvider.showStarterPrompts,
-                                  onSuggestionTap: _sendSuggestion,
+                          ),
+                          if (_jumpVisible)
+                            Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: IconButton.filledTonal(
+                                  tooltip: 'Jump to latest',
+                                  onPressed: _jumpToLatest,
+                                  icon: const Icon(
+                                    Icons.arrow_downward_rounded,
+                                  ),
                                 ),
-                              ),
-                      ),
-                    ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: composerInset + 8,
-                      child: Align(
-                        alignment: Alignment.center,
-                        child: IgnorePointer(
-                          ignoring: !showJumpButton,
-                          child: AnimatedSlide(
-                            duration: motionDuration,
-                            offset: showJumpButton
-                                ? Offset.zero
-                                : const Offset(0, 0.3),
-                            child: AnimatedOpacity(
-                              duration: motionDuration,
-                              opacity: showJumpButton ? 1 : 0,
-                              child: _JumpToLatestButton(
-                                onTap: _scrollToBottom,
                               ),
                             ),
-                          ),
-                        ),
+                        ],
+                      )
+                    : ChatEmptyState(
+                        mode: state.mode,
+                        apiConfigured: state.isConfigured,
+                        showStarterPrompts: settings.showStarterPrompts,
+                        onSuggestionTap: _useDraft,
+                        onConnect: () => _openPage(const SettingsScreen()),
                       ),
-                    ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: bottomInset,
-                      child: BottomChatField(chatProvider: chatProvider),
-                    ),
-                  ],
-                ),
+              ),
+              const SizedBox(height: 8),
+              BottomChatField(
+                key: _composer,
+                conversationVersion: state.version,
+                isBusy: state.isBusy,
+                isGenerating: state.isGenerating,
+                canStop: state.canStop,
+                compact: roomHeight < 380,
               ),
             ],
           ),
         );
       },
-    );
-  }
-}
-
-class _JumpToLatestButton extends StatelessWidget {
-  const _JumpToLatestButton({
-    required this.onTap,
-  });
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return IconButton.filledTonal(
-      onPressed: onTap,
-      style: IconButton.styleFrom(
-        backgroundColor: isDark
-            ? colorScheme.primaryContainer.withValues(alpha: 0.9)
-            : colorScheme.surfaceContainerLow.withValues(alpha: 0.92),
-        foregroundColor:
-            isDark ? colorScheme.onPrimaryContainer : colorScheme.onSurface,
-      ),
-      tooltip: 'Jump to latest',
-      icon: const Icon(CupertinoIcons.arrow_down),
     );
   }
 }

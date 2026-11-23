@@ -1,14 +1,16 @@
-import 'package:cupertino_ui/cupertino_ui.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/utilities/animated_dialog.dart';
+import 'package:chatbotapp/utilities/app_snackbar.dart';
+import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/app_icon_button.dart';
 import 'package:chatbotapp/widgets/app_screen_scaffold.dart';
 import 'package:chatbotapp/widgets/chat_history_widget.dart';
 import 'package:chatbotapp/widgets/empty_history_widget.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 class ChatHistoryScreen extends StatefulWidget {
@@ -19,194 +21,155 @@ class ChatHistoryScreen extends StatefulWidget {
 }
 
 class _ChatHistoryScreenState extends State<ChatHistoryScreen> {
-  final TextEditingController _searchController = TextEditingController();
+  final _searchController = TextEditingController();
   String _query = '';
-
-  @override
-  void initState() {
-    _searchController.addListener(_onSearchChanged);
-    super.initState();
-  }
+  String? _lastQuery;
+  List<ChatHistory>? _lastChats;
+  Future<List<ChatHistory>>? _results;
 
   @override
   void dispose() {
-    _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
     super.dispose();
   }
 
-  void _onSearchChanged() {
-    setState(() {
-      _query = _searchController.text.trim().toLowerCase();
-    });
-  }
+  void _updateQuery(String value) =>
+      setState(() => _query = value.trim().toLowerCase());
 
-  Future<void> _removeChat(
-    ChatProvider chatProvider,
-    ChatHistory chat,
-  ) async {
-    await chatProvider.deleteChatMessages(chatId: chat.chatId);
-    await chat.delete();
-  }
-
-  Future<void> _clearAllHistory(BuildContext context) async {
-    final chatProvider = context.read<ChatProvider>();
-
-    if (!context.mounted) {
-      return;
-    }
-
+  Future<void> _clearHistory(ChatProvider provider) async {
     final confirmed = await showAnimatedConfirmationDialog(
       context: context,
       title: 'Clear history',
-      content: 'Remove all chats?',
+      content: 'Delete all chats saved on this device?',
       actionText: 'Clear',
     );
-
-    if (!confirmed) {
-      return;
+    if (!mounted || !confirmed) return;
+    try {
+      await provider.clearAllChats();
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
     }
-
-    await chatProvider.clearAllChats();
   }
 
-  Future<bool> _deleteChat(
-    BuildContext context,
-    ChatHistory chat,
-  ) async {
-    final chatProvider = context.read<ChatProvider>();
-
-    if (!context.mounted) {
-      return false;
-    }
-
+  Future<void> _deleteChat(ChatProvider provider, ChatHistory chat) async {
     final confirmed = await showAnimatedConfirmationDialog(
       context: context,
       title: 'Delete chat',
-      content: 'Remove this chat?',
+      content: 'Delete this conversation from your history?',
       actionText: 'Delete',
     );
-
-    if (confirmed) {
-      await _removeChat(chatProvider, chat);
+    if (!mounted || !confirmed) return;
+    try {
+      await provider.deleteChat(chat.chatId);
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
     }
+  }
 
-    return confirmed;
+  Future<void> _openChat(ChatProvider provider, [ChatHistory? chat]) async {
+    if (provider.hasMessages &&
+        (provider.historyOff || provider.storageError != null) &&
+        provider.currentChatId != chat?.chatId) {
+      final confirmed = await showAnimatedConfirmationDialog(
+        context: context,
+        title: 'Switch conversations?',
+        content: 'The current conversation has unsaved messages.',
+        actionText: 'Continue',
+      );
+      if (!mounted || !confirmed) return;
+    }
+    try {
+      if (chat == null) {
+        await provider.newChat();
+      } else {
+        await provider.openChat(chat.chatId);
+      }
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
+    }
+  }
+
+  Future<List<ChatHistory>> _search(
+      ChatProvider provider, List<ChatHistory> chats) {
+    if (_lastQuery != _query || !listEquals(_lastChats, chats)) {
+      _lastQuery = _query;
+      _lastChats = chats;
+      _results = provider.searchChats(chats, _query);
+    }
+    return _results!;
   }
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.read<ChatProvider>();
     return AppScreenScaffold(
-      padding: const EdgeInsets.fromLTRB(
-        16,
-        10,
-        16,
-        0,
-      ),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: ValueListenableBuilder<Box<ChatHistory>>(
         valueListenable: Boxes.getChatHistory().listenable(),
         builder: (context, box, _) {
-          final allChats = box.values.toList().cast<ChatHistory>()
-            ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-          final filteredChats = _query.isEmpty
-              ? allChats
-              : allChats
-                  .where(
-                    (chat) =>
-                        chat.prompt.toLowerCase().contains(_query) ||
-                        chat.response.toLowerCase().contains(_query),
-                  )
-                  .toList();
-
+          final chats = box.values.toList()
+            ..sort((a, b) {
+              if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+              return b.timestamp.compareTo(a.timestamp);
+            });
           return Column(
             children: [
               Row(
                 children: [
                   AppIconButton(
-                    icon: CupertinoIcons.back,
+                    icon: Icons.arrow_back_rounded,
                     tooltip: 'Back',
                     onTap: () => Navigator.of(context).pop(),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'History',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        Text(
-                          allChats.isEmpty
-                              ? 'No chats yet'
-                              : '${allChats.length} chats',
-                          style:
-                              Theme.of(context).textTheme.labelLarge?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (allChats.isNotEmpty)
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      onPressed: () => _clearAllHistory(context),
+                      child: Text('History',
+                          style: Theme.of(context).textTheme.titleLarge)),
+                  if (chats.isNotEmpty)
+                    TextButton(
+                      onPressed: () => _clearHistory(provider),
                       child: const Text('Clear all'),
                     ),
                 ],
               ),
               const SizedBox(height: 16),
-              if (allChats.isNotEmpty) ...[
+              if (chats.isNotEmpty) ...[
                 TextField(
                   controller: _searchController,
+                  onChanged: _updateQuery,
                   decoration: InputDecoration(
-                    hintText: 'Search chats',
+                    hintText: 'Search titles and messages',
                     isDense: true,
-                    prefixIcon: const Icon(CupertinoIcons.search),
+                    prefixIcon: const Icon(Icons.search_rounded),
                     suffixIcon: _query.isEmpty
                         ? null
                         : IconButton(
-                            onPressed: _searchController.clear,
-                            icon: const Icon(
-                              CupertinoIcons.clear_circled_solid,
-                            ),
+                            tooltip: 'Clear search',
+                            onPressed: _clearSearch,
+                            icon: const Icon(Icons.close_rounded),
                           ),
                   ),
                 ),
                 const SizedBox(height: 12),
               ],
               Expanded(
-                child: filteredChats.isEmpty
-                    ? EmptyHistoryWidget(isFiltered: _query.isNotEmpty)
-                    : ListView.separated(
-                        padding: EdgeInsets.only(
-                          bottom: homeIndicatorSpacing(
-                            context,
-                            base: 10,
-                            factor: 0.1,
-                            maxExtra: 4,
-                          ),
-                        ),
-                        itemCount: filteredChats.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final chat = filteredChats[index];
-                          return Dismissible(
-                            key: ValueKey(chat.chatId),
-                            direction: DismissDirection.endToStart,
-                            confirmDismiss: (_) => _deleteChat(
-                              context,
-                              chat,
-                            ),
-                            background: _DeleteSwipeBackground(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: ChatHistoryWidget(chat: chat),
-                          );
+                child: _query.isEmpty || chats.isEmpty
+                    ? _buildResults(provider, chats, filtered: false)
+                    : FutureBuilder<List<ChatHistory>>(
+                        future: _search(provider, chats),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState !=
+                              ConnectionState.done) {
+                            return const Center(
+                                child: CircularProgressIndicator());
+                          }
+                          if (snapshot.hasError) {
+                            return const Center(
+                                child: Text('Could not search chat history.'));
+                          }
+                          return _buildResults(provider, snapshot.data ?? [],
+                              filtered: true);
                         },
                       ),
               ),
@@ -216,39 +179,58 @@ class _ChatHistoryScreenState extends State<ChatHistoryScreen> {
       ),
     );
   }
-}
 
-class _DeleteSwipeBackground extends StatelessWidget {
-  const _DeleteSwipeBackground({
-    required this.borderRadius,
-  });
+  void _clearSearch() {
+    _searchController.clear();
+    _updateQuery('');
+  }
 
-  final BorderRadius borderRadius;
+  Widget _buildResults(ChatProvider provider, List<ChatHistory> chats,
+      {required bool filtered}) {
+    if (chats.isEmpty) {
+      return EmptyHistoryWidget(
+        isFiltered: filtered,
+        onAction: filtered ? _clearSearch : () => _openChat(provider),
+      );
+    }
 
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Container(
-      alignment: Alignment.centerRight,
-      padding: const EdgeInsets.only(right: 18),
-      decoration: BoxDecoration(
-        color: colorScheme.errorContainer.withValues(alpha: 0.9),
-        borderRadius: borderRadius,
-      ),
-      child: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: colorScheme.error,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(
-          CupertinoIcons.delete_solid,
-          size: 18,
-          color: colorScheme.onError,
-        ),
-      ),
+    return ListView.separated(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom + 12),
+      itemCount: chats.length,
+      separatorBuilder: (context, index) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final chat = chats[index];
+        final colors = Theme.of(context).colorScheme;
+        return Dismissible(
+          key: ValueKey(chat.chatId),
+          direction: DismissDirection.endToStart,
+          confirmDismiss: (_) async {
+            await _deleteChat(provider, chat);
+            return false; // Hive removes the row when the deletion succeeds.
+          },
+          background: DecoratedBox(
+            decoration: BoxDecoration(
+              color: colors.errorContainer,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.only(right: 18),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Icon(Icons.delete_outline_rounded,
+                    color: colors.onErrorContainer),
+              ),
+            ),
+          ),
+          child: ChatHistoryWidget(
+            chat: chat,
+            onOpen: () => _openChat(provider, chat),
+            onDelete: () => _deleteChat(provider, chat),
+          ),
+        );
+      },
     );
   }
 }
