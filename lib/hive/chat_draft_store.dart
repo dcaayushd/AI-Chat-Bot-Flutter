@@ -20,17 +20,20 @@ class ChatDraftStore {
       ? Hive.box<String>(Constants.chatDraftsBox)
       : null;
 
-  String _key(String chatId) => chatId.isEmpty ? 'new' : 'chat:$chatId';
+  String _key(String chatId, String? projectId) {
+    if (chatId.isNotEmpty) return 'chat:$chatId';
+    return projectId == null ? 'new' : 'project:$projectId';
+  }
 
-  String read(String chatId) {
-    final key = _key(chatId);
+  String read(String chatId, {String? projectId}) {
+    final key = _key(chatId, projectId);
     return (_pending.containsKey(key) ? _pending[key] : _box?.get(key)) ?? '';
   }
 
-  void update(String chatId, String text) {
+  void update(String chatId, String text, {String? projectId}) {
     final value = text.trim().isEmpty ? '' : text;
-    if (read(chatId) == value) return;
-    _pending[_key(chatId)] = value.isEmpty ? null : value;
+    if (read(chatId, projectId: projectId) == value) return;
+    _pending[_key(chatId, projectId)] = value.isEmpty ? null : value;
     if (_box == null) return;
     _timer ??= Timer(
       const Duration(milliseconds: 300),
@@ -70,8 +73,8 @@ class ChatDraftStore {
     });
   }
 
-  Future<void> forget(String chatId) async {
-    update(chatId, '');
+  Future<void> forget(String chatId, {String? projectId}) async {
+    update(chatId, '', projectId: projectId);
     await _flushDeletion();
   }
 

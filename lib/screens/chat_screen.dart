@@ -17,6 +17,7 @@ import 'package:chatbotapp/widgets/chat/chat_dialogs.dart';
 import 'package:chatbotapp/widgets/chat/chat_empty_state.dart';
 import 'package:chatbotapp/widgets/chat/chat_header.dart';
 import 'package:chatbotapp/widgets/chat/conversation_outline.dart';
+import 'package:chatbotapp/widgets/chat/conversation_files.dart';
 import 'package:chatbotapp/widgets/chat_messages.dart';
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:flutter/services.dart';
@@ -175,13 +176,22 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _useDraft(String text) => _composer.currentState?.useDraft(text);
 
-  Future<bool> _openChat(String? chatId) {
+  Future<bool> _startChat(String? projectId) {
+    final chat = context.read<ChatProvider>();
+    return _switchChat(
+      () => chat.newChat(projectId: projectId),
+      title: 'Start a new chat?',
+      actionLabel: 'Start new chat',
+    );
+  }
+
+  Future<bool> _openChat(String chatId) {
     final chat = context.read<ChatProvider>();
     if (chatId == chat.currentChatId) return Future.value(true);
     return _switchChat(
-      chatId == null ? chat.newChat : () => chat.openChat(chatId),
-      title: chatId == null ? 'Start a new chat?' : 'Switch conversations?',
-      actionLabel: chatId == null ? 'Start new chat' : 'Switch chat',
+      () => chat.openChat(chatId),
+      title: 'Switch conversations?',
+      actionLabel: 'Switch chat',
     );
   }
 
@@ -287,6 +297,17 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _exportChat(ChatProvider chat) async {
+    final title = chat.title ?? 'Conversation';
+    try {
+      final bytes = await chat.exportCurrentArchive();
+      if (mounted)
+        await exportConversationFile(context, title: title, bytes: bytes);
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
+    }
+  }
+
   void _openSettings() => _openPage(const SettingsScreen());
 
   void _openPage(Widget page) {
@@ -351,6 +372,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final state = context.select(
       (ChatProvider chat) => (
         title: chat.title ?? 'Chat',
+        projectName: chat.currentProject?.name,
         hasMessages: chat.hasMessages,
         isConfigured: chat.isConfigured,
         historyOff: chat.historyOff,
@@ -402,6 +424,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: ChatHistoryPanel(
                         onOpenChat: _openChat,
                         onOpenBookmark: _openBookmark,
+                        onNewChat: _startChat,
                         onSettings: _openSettings,
                       ),
                     ),
@@ -428,6 +451,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         children: [
                           ChatHeader(
                             title: state.title,
+                            projectName: state.projectName,
                             userName: userName,
                             mode: state.mode,
                             historyOff: state.historyOff,
@@ -444,14 +468,18 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ChatHistoryScreen(
                                       openChat: _openChat,
                                       openBookmark: _openBookmark,
+                                      startChat: _startChat,
                                     ),
                                   ),
                             onOpenSettings: showSidebar ? null : _openSettings,
                             onNewChat: showSidebar
                                 ? null
-                                : () => _openChat(null),
+                                : () => _startChat(chat.currentProject?.id),
                             onCopyChat: state.hasMessages
                                 ? () => _copyChat(chat)
+                                : null,
+                            onExportChat: state.hasMessages && !state.isBusy
+                                ? () => _exportChat(chat)
                                 : null,
                           ),
                           const Divider(height: 20),

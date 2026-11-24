@@ -10,6 +10,8 @@ import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 import 'package:chatbotapp/widgets/app_icon_button.dart';
 import 'package:chatbotapp/widgets/app_screen_scaffold.dart';
+import 'package:chatbotapp/widgets/chat/conversation_files.dart';
+import 'package:chatbotapp/widgets/chat/project_controls.dart';
 import 'package:chatbotapp/widgets/chat_history_widget.dart';
 import 'package:chatbotapp/widgets/empty_history_widget.dart';
 import 'package:flutter/foundation.dart';
@@ -22,27 +24,30 @@ class ChatHistoryScreen extends StatelessWidget {
     super.key,
     required this.openChat,
     required this.openBookmark,
+    required this.startChat,
   });
 
-  final Future<bool> Function(String?) openChat;
+  final Future<bool> Function(String) openChat;
   final Future<bool> Function(ReplyBookmark) openBookmark;
+  final Future<bool> Function(String?) startChat;
 
   @override
   Widget build(BuildContext context) {
+    Future<void> closeOnSuccess(Future<bool> action) async {
+      if (await action &&
+          context.mounted &&
+          ModalRoute.of(context)?.isCurrent == true) {
+        Navigator.of(context).pop();
+      }
+    }
+
     return AppScreenScaffold(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: ChatHistoryPanel(
         onBack: () => Navigator.of(context).pop(),
-        onOpenChat: (chatId) async {
-          if (await openChat(chatId) && context.mounted) {
-            Navigator.of(context).pop();
-          }
-        },
-        onOpenBookmark: (bookmark) async {
-          if (await openBookmark(bookmark) && context.mounted) {
-            Navigator.of(context).pop();
-          }
-        },
+        onOpenChat: (chatId) => closeOnSuccess(openChat(chatId)),
+        onOpenBookmark: (bookmark) => closeOnSuccess(openBookmark(bookmark)),
+        onNewChat: (projectId) => closeOnSuccess(startChat(projectId)),
       ),
     );
   }
@@ -55,12 +60,14 @@ class ChatHistoryPanel extends StatefulWidget {
     super.key,
     required this.onOpenChat,
     required this.onOpenBookmark,
+    required this.onNewChat,
     this.onBack,
     this.onSettings,
   });
 
-  final ValueChanged<String?> onOpenChat;
+  final ValueChanged<String> onOpenChat;
   final ValueChanged<ReplyBookmark> onOpenBookmark;
+  final ValueChanged<String?> onNewChat;
   final VoidCallback? onBack;
   final VoidCallback? onSettings;
 
@@ -71,6 +78,8 @@ class ChatHistoryPanel extends StatefulWidget {
 class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
   final _searchController = TextEditingController();
   _HistorySection _section = _HistorySection.chats;
+  String? _projectId;
+  bool _importing = false;
   late final _history = Boxes.getChatHistory().listenable();
   Timer? _searchDebounce;
   String _query = '';
@@ -103,6 +112,24 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
   void _clearSearch() {
     _searchController.clear();
     _updateQuery('');
+  }
+
+  Future<void> _importConversation(String? projectId) async {
+    if (_importing) return;
+    setState(() => _importing = true);
+    try {
+      final archive = await pickConversationFile();
+      if (archive == null || !mounted) return;
+      await context.read<ChatProvider>().importArchive(
+        archive,
+        projectId: projectId,
+      );
+      if (mounted) showAppSnackBar(context, 'Conversation imported');
+    } catch (error) {
+      if (mounted) showAppSnackBar(context, formatChatError(error));
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
   }
 
   Future<void> _clearHistory(ChatProvider provider) async {
@@ -150,6 +177,12 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
   @override
   Widget build(BuildContext context) {
     final provider = context.read<ChatProvider>();
+    final isBusy = context.select((ChatProvider chat) => chat.isBusy);
+    context.select((ChatProvider chat) => chat.projectRevision);
+    final projects = provider.projects;
+    final projectId = projects.any((project) => project.id == _projectId)
+        ? _projectId
+        : null;
     final activeChatId = context.select<ChatProvider, String>(
       (chat) => chat.currentChatId,
     );
@@ -157,178 +190,240 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
     final colors = theme.colorScheme;
     final showingBookmarks = _section == _HistorySection.bookmarks;
 
-    return ValueListenableBuilder<Box<ChatHistory>>(
-      valueListenable: _history,
-      builder: (context, box, _) {
-        final chats = box.values.toList()
-          ..sort((a, b) {
-            if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-            return b.timestamp.compareTo(a.timestamp);
-          });
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_isSidebar) ...[
-              Row(
-                children: [
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: colors.primary,
-                      borderRadius: BorderRadius.circular(11),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(9),
-                      child: Icon(
-                        Icons.auto_awesome_rounded,
-                        color: colors.onPrimary,
-                        size: 19,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      Constants.appTitle,
-                      style: theme.textTheme.titleMedium,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              FilledButton.tonalIcon(
-                onPressed: () => widget.onOpenChat(null),
-                icon: const Icon(Icons.add_rounded, size: 20),
-                label: const Text('New chat'),
-              ),
-              const SizedBox(height: 12),
-            ] else ...[
-              Row(
-                children: [
-                  AppIconButton(
-                    icon: Icons.arrow_back_rounded,
-                    tooltip: 'Back',
-                    onTap: widget.onBack!,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text('History', style: theme.textTheme.titleLarge),
-                  ),
-                  if (chats.isNotEmpty)
-                    TextButton(
-                      onPressed: () => _clearHistory(provider),
-                      child: const Text('Clear all'),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 16),
-            ],
-            SegmentedButton<_HistorySection>(
-              segments: const [
-                ButtonSegment(
-                  value: _HistorySection.chats,
-                  label: Text('Chats'),
-                ),
-                ButtonSegment(
-                  value: _HistorySection.bookmarks,
-                  label: Text('Saved replies'),
-                ),
-              ],
-              selected: {_section},
-              showSelectedIcon: false,
-              onSelectionChanged: (selection) =>
-                  setState(() => _section = selection.single),
-            ),
-            const SizedBox(height: 12),
-            if (_isSidebar ||
-                chats.isNotEmpty ||
-                _query.isNotEmpty ||
-                showingBookmarks) ...[
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: _searchController,
-                builder: (context, value, _) => TextField(
-                  controller: _searchController,
-                  onChanged: _updateQuery,
-                  decoration: InputDecoration(
-                    hintText: showingBookmarks
-                        ? 'Search saved replies'
-                        : _isSidebar
-                        ? 'Search chats'
-                        : 'Search titles and messages',
-                    isDense: true,
-                    prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                    suffixIcon: value.text.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Clear search',
-                            onPressed: _clearSearch,
-                            icon: const Icon(Icons.close_rounded, size: 18),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < 250;
+        return ValueListenableBuilder<Box<ChatHistory>>(
+          valueListenable: _history,
+          builder: (context, box, _) {
+            final chats =
+                box.values
+                    .where(
+                      (chat) =>
+                          projectId == null || chat.projectId == projectId,
+                    )
+                    .toList()
+                  ..sort((a, b) {
+                    if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+                    return b.timestamp.compareTo(a.timestamp);
+                  });
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_isSidebar && !compact) ...[
+                  Row(
+                    children: [
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: colors.primary,
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(9),
+                          child: Icon(
+                            Icons.auto_awesome_rounded,
+                            color: colors.onPrimary,
+                            size: 19,
                           ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          Constants.appTitle,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            if (_isSidebar && chats.isNotEmpty && !showingBookmarks)
-              Row(
-                children: [
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Saved chats',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: colors.onSurfaceVariant,
+                  const SizedBox(height: 22),
+                  FilledButton.tonalIcon(
+                    onPressed: () => widget.onNewChat(projectId),
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                    label: const Text('New chat'),
+                  ),
+                  const SizedBox(height: 12),
+                ] else if (!_isSidebar) ...[
+                  Row(
+                    children: [
+                      AppIconButton(
+                        icon: Icons.arrow_back_rounded,
+                        tooltip: 'Back',
+                        onTap: widget.onBack!,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'History',
+                          style: theme.textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'New chat',
+                        onPressed: () => widget.onNewChat(projectId),
+                        icon: const Icon(Icons.add_rounded),
+                      ),
+                      if (!compact && projectId == null && chats.isNotEmpty)
+                        TextButton(
+                          onPressed: () => _clearHistory(provider),
+                          child: const Text('Clear all'),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                if (!compact) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ProjectPicker(
+                          projects: projects,
+                          selectedId: projectId,
+                          onChanged: (id) => setState(() => _projectId = id),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      IconButton(
+                        tooltip: 'Import conversation file',
+                        onPressed: _importing || isBusy
+                            ? null
+                            : () => _importConversation(projectId),
+                        icon: _importing
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.file_open_outlined, size: 21),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  SegmentedButton<_HistorySection>(
+                    segments: const [
+                      ButtonSegment(
+                        value: _HistorySection.chats,
+                        label: Text('Chats'),
+                      ),
+                      ButtonSegment(
+                        value: _HistorySection.bookmarks,
+                        label: Text('Saved replies'),
+                      ),
+                    ],
+                    selected: {_section},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (selection) =>
+                        setState(() => _section = selection.single),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (_isSidebar ||
+                    chats.isNotEmpty ||
+                    _query.isNotEmpty ||
+                    showingBookmarks) ...[
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _searchController,
+                    builder: (context, value, _) => TextField(
+                      controller: _searchController,
+                      onChanged: _updateQuery,
+                      decoration: InputDecoration(
+                        hintText: showingBookmarks
+                            ? 'Search saved replies'
+                            : _isSidebar
+                            ? 'Search chats'
+                            : 'Search titles and messages',
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                        suffixIcon: value.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: 'Clear search',
+                                onPressed: _clearSearch,
+                                icon: const Icon(Icons.close_rounded, size: 18),
+                              ),
                       ),
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'Clear history',
-                    onPressed: () => _clearHistory(provider),
-                    icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+                  const SizedBox(height: 12),
+                ],
+                if (!compact &&
+                    _isSidebar &&
+                    chats.isNotEmpty &&
+                    !showingBookmarks)
+                  Row(
+                    children: [
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Saved chats',
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      if (projectId == null)
+                        IconButton(
+                          tooltip: 'Clear history',
+                          onPressed: () => _clearHistory(provider),
+                          icon: const Icon(
+                            Icons.delete_sweep_outlined,
+                            size: 20,
+                          ),
+                        ),
+                    ],
+                  ),
+                Expanded(
+                  child: showingBookmarks
+                      ? _buildBookmarks(provider.findBookmarks(chats, _query))
+                      : _query.isEmpty || chats.isEmpty
+                      ? _buildResults(
+                          provider,
+                          chats,
+                          activeChatId,
+                          projectId: projectId,
+                        )
+                      : FutureBuilder<List<ChatHistory>>(
+                          future: _search(provider, chats),
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState !=
+                                ConnectionState.done) {
+                              return const Center(
+                                child: CircularProgressIndicator(
+                                  semanticsLabel: 'Searching chats',
+                                ),
+                              );
+                            }
+                            if (snapshot.hasError) {
+                              return const Center(
+                                child: Text('Could not search chat history.'),
+                              );
+                            }
+                            return _buildResults(
+                              provider,
+                              snapshot.data ?? [],
+                              activeChatId,
+                              filtered: true,
+                              projectId: projectId,
+                            );
+                          },
+                        ),
+                ),
+                if (!compact && widget.onSettings != null) ...[
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: TextButton.icon(
+                      onPressed: widget.onSettings,
+                      icon: const Icon(Icons.settings_outlined, size: 20),
+                      label: const Text('Settings'),
+                    ),
                   ),
                 ],
-              ),
-            Expanded(
-              child: showingBookmarks
-                  ? _buildBookmarks(provider.findBookmarks(chats, _query))
-                  : _query.isEmpty || chats.isEmpty
-                  ? _buildResults(provider, chats, activeChatId)
-                  : FutureBuilder<List<ChatHistory>>(
-                      future: _search(provider, chats),
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState != ConnectionState.done) {
-                          return const Center(
-                            child: CircularProgressIndicator(
-                              semanticsLabel: 'Searching chats',
-                            ),
-                          );
-                        }
-                        if (snapshot.hasError) {
-                          return const Center(
-                            child: Text('Could not search chat history.'),
-                          );
-                        }
-                        return _buildResults(
-                          provider,
-                          snapshot.data ?? [],
-                          activeChatId,
-                          filtered: true,
-                        );
-                      },
-                    ),
-            ),
-            if (widget.onSettings case final onSettings?) ...[
-              const Divider(),
-              const SizedBox(height: 8),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: TextButton.icon(
-                  onPressed: onSettings,
-                  icon: const Icon(Icons.settings_outlined, size: 20),
-                  label: const Text('Settings'),
-                ),
-              ),
-            ],
-          ],
+              ],
+            );
+          },
         );
       },
     );
@@ -407,13 +502,14 @@ class _ChatHistoryPanelState extends State<ChatHistoryPanel> {
     List<ChatHistory> chats,
     String activeChatId, {
     bool filtered = false,
+    String? projectId,
   }) {
     if (chats.isEmpty) {
       return EmptyHistoryWidget(
         isFiltered: filtered,
         onAction: filtered
             ? _clearSearch
-            : (_isSidebar ? null : () => widget.onOpenChat(null)),
+            : (_isSidebar ? null : () => widget.onNewChat(projectId)),
       );
     }
 

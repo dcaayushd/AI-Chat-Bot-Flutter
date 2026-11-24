@@ -2,10 +2,13 @@ import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/widgets/app_icon_button.dart';
 import 'package:material_ui/material_ui.dart';
 
+enum _ShareAction { copy, export }
+
 class ChatHeader extends StatelessWidget {
   const ChatHeader({
     super.key,
     required this.title,
+    this.projectName,
     required this.userName,
     required this.mode,
     required this.historyOff,
@@ -16,11 +19,13 @@ class ChatHeader extends StatelessWidget {
     this.onOpenSettings,
     this.onNewChat,
     this.onCopyChat,
+    this.onExportChat,
     this.onOutline,
     this.outlineOpen = false,
   });
 
   final String title;
+  final String? projectName;
   final String userName;
   final ChatMode mode;
   final bool historyOff;
@@ -31,6 +36,7 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback? onOpenSettings;
   final VoidCallback? onNewChat;
   final VoidCallback? onCopyChat;
+  final VoidCallback? onExportChat;
   final VoidCallback? onOutline;
   final bool outlineOpen;
 
@@ -39,14 +45,38 @@ class ChatHeader extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final heading = Expanded(
-      child: Semantics(
-        header: true,
-        child: Text(
-          title,
-          style: theme.textTheme.titleLarge,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(
+            header: true,
+            child: Text(
+              title,
+              style: theme.textTheme.titleLarge,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (projectName case final project?) ...[
+            const SizedBox(height: 3),
+            Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 15, color: colors.primary),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(
+                    project,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
     final modePicker = _ModePicker(
@@ -61,10 +91,24 @@ class ChatHeader extends StatelessWidget {
         color: colors.onSurfaceVariant,
       ),
     );
-    final copyAction = IconButton(
-      tooltip: 'Copy conversation',
-      onPressed: onCopyChat,
-      icon: const Icon(Icons.copy_all_outlined, size: 20),
+    final shareAction = PopupMenuButton<_ShareAction>(
+      tooltip: 'Share conversation',
+      icon: const Icon(Icons.ios_share_rounded, size: 20),
+      onSelected: (action) => switch (action) {
+        _ShareAction.copy => onCopyChat?.call(),
+        _ShareAction.export => onExportChat?.call(),
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: _ShareAction.copy,
+          child: Text('Copy as Markdown'),
+        ),
+        PopupMenuItem(
+          value: _ShareAction.export,
+          enabled: onExportChat != null,
+          child: const Text('Export conversation file'),
+        ),
+      ],
     );
     final optionsAction = IconButton(
       tooltip: 'Chat options',
@@ -94,7 +138,7 @@ class ChatHeader extends StatelessWidget {
           modePicker,
           optionsAction,
           if (onOutline != null) outlineAction,
-          if (onCopyChat != null) copyAction,
+          if (onCopyChat != null) shareAction,
         ],
       );
     }
@@ -105,7 +149,7 @@ class ChatHeader extends StatelessWidget {
         Row(
           children: [
             heading,
-            if (onCopyChat != null) copyAction,
+            if (onCopyChat != null) shareAction,
             IconButton(
               tooltip: 'History',
               onPressed: onOpenHistory,

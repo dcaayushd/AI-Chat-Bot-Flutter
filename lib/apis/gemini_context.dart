@@ -5,13 +5,19 @@ import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
 
 class GeminiContext {
-  const GeminiContext(this.turns, {required this.limited});
+  const GeminiContext(
+    this.turns, {
+    required this.limited,
+    this.projectReference = '',
+  });
 
   static const maxTextLength = 80000;
   static const maxMessages = 24;
 
   final List<GeminiTurn> turns;
   final bool limited;
+  final String projectReference;
+  static const projectReferenceLabel = 'Project reference notes\n';
 
   static Future<GeminiContext> build({
     required List<Message> messages,
@@ -19,9 +25,11 @@ class GeminiContext {
     required Future<ChatAttachment?> Function(String, String) loadAttachment,
     required bool Function() stopped,
     List<GeminiTurn> suffix = const [],
+    String referenceNotes = '',
   }) async {
     final turns = <GeminiTurn>[];
     var limited = false;
+    var projectReference = '';
     var remainingText =
         maxTextLength -
         suffix.fold(0, (total, turn) => total + turn.text.length);
@@ -78,14 +86,27 @@ class GeminiContext {
         }
       }
       turns.add(GeminiTurn(message.role, message.text, attachments));
+      if (current && referenceNotes.isNotEmpty) {
+        // The current prompt and its files have first claim on the context budget.
+        final available = (remainingText - projectReferenceLabel.length)
+            .clamp(0, referenceNotes.length)
+            .toInt();
+        if (available > 0) {
+          projectReference =
+              projectReferenceLabel + referenceNotes.substring(0, available);
+          remainingText -= projectReference.length;
+        }
+        limited = limited || available < referenceNotes.length;
+      }
     }
 
     final context = turns.reversed
         .skipWhile((turn) => turn.role == Role.assistant)
         .toList();
-    return GeminiContext([
-      ...context,
-      ...suffix,
-    ], limited: limited || context.length < promptIndex + 1);
+    return GeminiContext(
+      [...context, ...suffix],
+      limited: limited || context.length < promptIndex + 1,
+      projectReference: projectReference,
+    );
   }
 }

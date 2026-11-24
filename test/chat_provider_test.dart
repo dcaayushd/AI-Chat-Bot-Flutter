@@ -4,10 +4,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:chatbotapp/apis/gemini_client.dart';
+import 'package:chatbotapp/apis/gemini_context.dart';
 import 'package:chatbotapp/constants/constants.dart';
 import 'package:chatbotapp/hive/boxes.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/chat_repository.dart';
+import 'package:chatbotapp/models/chat_archive.dart';
 import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
@@ -51,6 +53,7 @@ void main() {
     await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
     await Hive.openLazyBox<Map>(Constants.chatImagesBox);
     await Hive.openBox<String>(Constants.chatDraftsBox);
+    await Hive.openBox<Map>(Constants.chatProjectsBox);
   });
 
   ChatProvider createChat(
@@ -66,6 +69,256 @@ void main() {
     addTearDown(provider.dispose);
     return provider;
   }
+
+  test('exports and imports files, answer versions, options, and bookmarks independently', () async {
+    var generationCount = 0;
+    final chat = createChat(
+      MockClient((_) async {
+        generationCount++;
+        return http.Response(_event('Answer $generationCount'), 200);
+      }),
+    );
+    final source = await chat.saveProject(
+      name: 'Source project',
+      referenceNotes: 'Local project notes',
+    );
+    final destination = await chat.saveProject(name: 'Travel project');
+    await chat.newChat(projectId: source.id);
+    chat.setMode(ChatMode.study);
+    const options = ChatOptions(
+      length: ReplyLength.concise,
+      instructions: 'Use exercises.',
+    );
+    await chat.updateOptions(options);
+    final image = ChatImage.fromBytes(
+      'chart.png',
+      MockClient.pngResponse().bodyBytes,
+    );
+    final document = ChatDocument.fromBytes(
+      'notes.md',
+      Uint8List.fromList(utf8.encode('# Field notes')),
+    );
+    await chat.send(
+      'Explain the files',
+      images: [image],
+      documents: [document],
+    );
+    await chat.retryLastReply();
+    await chat.toggleReplyBookmark(chat.messages.last.messageId);
+    final originalId = chat.currentChatId;
+    final originalIds = chat.messages
+        .map((message) => message.messageId)
+        .toList();
+    await chat.renameChat(originalId, 'Field notes');
+
+    final bytes = await chat.exportSavedArchive(originalId);
+    final exported = utf8.decode(bytes);
+    expect(exported, isNot(contains('attachment:')));
+    expect(exported, isNot(contains('Local project notes')));
+    final archive = ChatArchive.decode(bytes);
+    expect(archive.attachments.length, 2);
+    await chat.importArchive(archive, projectId: destination.id);
+    expect(chat.currentChatId, originalId);
+    expect(generationCount, 2);
+
+    final imported = Boxes.getChatHistory().values.singleWhere(
+      (item) => item.chatId != originalId,
+    );
+    expect(imported.projectId, destination.id);
+    await chat.openChat(imported.chatId);
+    expect(chat.title, 'Field notes');
+    expect(chat.mode, ChatMode.study);
+    expect(chat.options, options);
+    expect(
+      chat.messages.map((message) => message.messageId),
+      isNot(originalIds),
+    );
+    expect(chat.messages.last.text, 'Answer 2');
+    expect(chat.messages.last.previousReplies.single.text, 'Answer 1');
+    expect(chat.messages.last.bookmarkedAt, isNotNull);
+
+    await chat.deleteChat(originalId);
+    final restoredImage = await chat.imageFor(
+      imported.chatId,
+      chat.messages.first.imagesUrls.single,
+    );
+    final restoredDocument = await chat.attachmentFor(
+      imported.chatId,
+      chat.messages.first.documentRefs.single,
+    );
+    expect(restoredImage?.bytes, image.bytes);
+    expect((restoredDocument as ChatDocument).text, document.text);
+    expect(generationCount, 2);
+  });
+
+  test('validates archive versions and attachments before importing', () async {
+    final chat = createChat(
+      MockClient((_) async => http.Response(_event('An answer'), 200)),
+    );
+    final image = ChatImage.fromBytes(
+      'chart.png',
+      MockClient.pngResponse().bodyBytes,
+    );
+    await chat.send('Describe the chart', images: [image]);
+    final bytes = await chat.exportCurrentArchive();
+    final record = jsonDecode(utf8.decode(bytes)) as Map;
+
+    expect(
+      () => ChatArchive.decode(
+        utf8.encode(jsonEncode({...record, 'version': 2})),
+      ),
+      throwsA(
+        isA<ChatException>().having(
+          (error) => error.message,
+          'message',
+          contains('unsupported version'),
+        ),
+      ),
+    );
+    expect(
+      () => ChatArchive.decode(
+        utf8.encode(jsonEncode({...record, 'attachments': <String, Object>{}})),
+      ),
+      throwsA(
+        isA<ChatException>().having(
+          (error) => error.message,
+          'message',
+          contains('missing or invalid attachments'),
+        ),
+      ),
+    );
+    expect(Boxes.getChatHistory().length, 1);
+    expect(Hive.lazyBox<Map>(Constants.chatImagesBox).length, 1);
+  });
+
+  test(
+    'can export a session-only chat with its files before it is saved anywhere',
+    () async {
+      final chat = createChat(
+        MockClient((_) async => http.Response(_event('Private answer'), 200)),
+        shouldSaveHistory: () => false,
+      );
+      final document = ChatDocument.fromBytes(
+        'private.txt',
+        Uint8List.fromList(utf8.encode('Private note')),
+      );
+      await chat.send('Summarize', documents: [document]);
+      final archived = ChatArchive.decode(await chat.exportCurrentArchive());
+      expect(archived.messages.last.text, 'Private answer');
+      expect(
+        (archived.attachments.values.single as ChatDocument).text,
+        document.text,
+      );
+      expect(Boxes.getChatHistory().isEmpty, isTrue);
+      expect(Hive.lazyBox<Map>(Constants.chatImagesBox).isEmpty, isTrue);
+    },
+  );
+
+  test(
+    'persists project context, isolated drafts, and chat membership',
+    () async {
+      final requests = <Map>[];
+      final client = MockClient((request) async {
+        requests.add(jsonDecode(request.body) as Map);
+        return http.Response(_event('Next step'), 200);
+      });
+      final chat = createChat(client);
+      final alpha = await chat.saveProject(
+        name: ' Release planning ',
+        instructions: 'Use a release checklist.',
+        referenceNotes: 'The beta launch is internal.',
+      );
+      final beta = await chat.saveProject(
+        name: 'Editorial',
+        instructions: 'Use short paragraphs.',
+      );
+
+      await chat.newChat(projectId: alpha.id);
+      chat.rememberDraft('Unsent release draft');
+      await chat.newChat(projectId: beta.id);
+      expect(chat.draftText, isEmpty);
+      chat.rememberDraft('Editorial draft');
+      await chat.newChat(projectId: alpha.id);
+      expect(chat.draftText, 'Unsent release draft');
+      await chat.send('Plan the next step');
+      final sourceId = chat.currentChatId;
+      expect(repository.getChat(sourceId)?.projectId, alpha.id);
+      expect(requests.single['contents'].single['parts'], [
+        {'text': 'Project reference notes\nThe beta launch is internal.'},
+        {'text': 'Plan the next step'},
+      ]);
+      expect(
+        (requests.single['systemInstruction']['parts'] as List).map(
+          (part) => part['text'],
+        ),
+        contains('Use a release checklist.'),
+      );
+
+      await chat.branchFrom(chat.messages.last.messageId);
+      final branchId = chat.currentChatId;
+      expect(repository.getChat(branchId)?.projectId, alpha.id);
+      await chat.moveChatToProject(branchId, beta.id);
+      expect(chat.currentProject?.name, 'Editorial');
+      await chat.send('Draft a note');
+      expect(
+        (requests.last['systemInstruction']['parts'] as List).map(
+          (part) => part['text'],
+        ),
+        contains('Use short paragraphs.'),
+      );
+      expect(
+        jsonEncode(requests.last),
+        isNot(contains('The beta launch is internal.')),
+      );
+
+      await Hive.box<Map>(Constants.chatProjectsBox).close();
+      await Hive.openBox<Map>(Constants.chatProjectsBox);
+      final reopened = createChat(client);
+      await reopened.openChat(branchId);
+      expect(reopened.currentProject?.id, beta.id);
+      await reopened.removeProject(alpha.id);
+      expect(repository.getChat(sourceId), isNotNull);
+      await reopened.openChat(sourceId);
+      expect(reopened.currentProject, isNull);
+      expect(reopened.messages.first.text, 'Plan the next step');
+      expect(
+        Hive.box<String>(Constants.chatDraftsBox).values,
+        isNot(contains('Unsent release draft')),
+      );
+      await reopened.clearAllChats();
+      expect(reopened.projects.single.id, beta.id);
+    },
+  );
+
+  test('keeps current documents and the continuation ahead of project notes in the context budget', () async {
+    final doc = ChatDocument.fromBytes(
+      'notes.txt',
+      Uint8List.fromList(utf8.encode('d' * 20000)),
+    );
+    final prompt = Message(
+      messageId: 'prompt',
+      chatId: 'chat',
+      role: Role.user,
+      text: 'p' * 24000,
+      timeSent: DateTime.now(),
+      documentRefs: ['first', 'second'],
+    );
+    final context = await GeminiContext.build(
+      messages: [prompt],
+      promptIndex: 0,
+      loadAttachment: (_, _) async => doc,
+      stopped: () => false,
+      referenceNotes: 'r' * 12000,
+      suffix: [
+        GeminiTurn(Role.assistant, 'a' * 12000),
+        const GeminiTurn(Role.user, 'Continue'),
+      ],
+    );
+    expect(context.turns.first.attachments, [doc, doc]);
+    expect(context.turns.last.text, 'Continue');
+    expect(context.projectReference.length, 3992);
+    expect(context.limited, isTrue);
+  });
 
   test(
     'reopens each draft independently and removes drafts with their history',

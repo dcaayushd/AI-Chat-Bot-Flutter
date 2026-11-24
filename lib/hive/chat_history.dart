@@ -34,6 +34,9 @@ class ChatHistory extends HiveObject {
   @HiveField(9)
   final Map? options;
 
+  @HiveField(10)
+  final String? projectId;
+
   ChatHistory({
     required this.chatId,
     required this.prompt,
@@ -45,6 +48,7 @@ class ChatHistory extends HiveObject {
     this.transcript,
     this.mode,
     this.options,
+    this.projectId,
   });
 
   String get displayTitle => formatTitle(title ?? prompt);
@@ -59,6 +63,8 @@ class ChatHistory extends HiveObject {
     bool? isPinned,
     Map? options,
     List<Map>? transcript,
+    String? projectId,
+    bool clearProject = false,
   }) => ChatHistory(
     chatId: chatId,
     prompt: prompt,
@@ -70,5 +76,6 @@ class ChatHistory extends HiveObject {
     transcript: transcript ?? this.transcript,
     mode: mode,
     options: options ?? this.options,
+    projectId: clearProject ? null : projectId ?? this.projectId,
   );
 }

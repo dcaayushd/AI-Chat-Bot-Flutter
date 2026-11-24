@@ -7,6 +7,7 @@ import 'package:chatbotapp/hive/legacy_chat_storage_stub.dart'
     if (dart.library.io) 'package:chatbotapp/hive/legacy_chat_storage_io.dart';
 import 'package:chatbotapp/hive/settings.dart';
 import 'package:chatbotapp/hive/user_model.dart';
+import 'package:chatbotapp/models/chat_archive.dart';
 import 'package:chatbotapp/models/chat_attachment.dart';
 import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
@@ -36,6 +37,7 @@ class ChatRepository {
       Hive.openBox<Settings>(Constants.settingsBox),
       Hive.openLazyBox<Map>(Constants.chatImagesBox),
       Hive.openBox<String>(Constants.chatDraftsBox),
+      Hive.openBox<Map>(Constants.chatProjectsBox),
     ]);
   }
 
@@ -109,6 +111,7 @@ class ChatRepository {
     required ChatOptions options,
     required Map<String, ChatAttachment> newAttachments,
     String? title,
+    String? projectId,
   }) async {
     final attachmentMaps = newAttachments.map(
       (key, attachment) => MapEntry(key, attachment.toMap()),
@@ -143,6 +146,7 @@ class ChatRepository {
           transcript: messages.map((message) => message.toMap()).toList(),
           mode: mode.name,
           options: options.toMap(),
+          projectId: projectId,
         ),
       );
     } catch (_) {
@@ -157,16 +161,54 @@ class ChatRepository {
     required Iterable<Message> prefix,
     required ChatMode mode,
     required ChatOptions options,
+    String? projectId,
+  }) => _copyConversation(
+    chatId: chatId,
+    title: title,
+    sourceMessages: prefix,
+    mode: mode,
+    options: options,
+    projectId: projectId,
+    resolveAttachment: loadAttachment,
+    clearBookmarks: true,
+  );
+
+  Future<void> restoreArchive({
+    required String chatId,
+    required ChatArchive archive,
+    String? projectId,
+  }) async {
+    await _copyConversation(
+      chatId: chatId,
+      title: archive.title,
+      sourceMessages: archive.messages,
+      mode: archive.mode,
+      options: archive.options,
+      projectId: projectId,
+      resolveAttachment: (_, reference) async => archive.attachments[reference],
+      clearBookmarks: false,
+    );
+  }
+
+  Future<List<Message>> _copyConversation({
+    required String chatId,
+    required String title,
+    required Iterable<Message> sourceMessages,
+    required ChatMode mode,
+    required ChatOptions options,
+    required String? projectId,
+    required Future<ChatAttachment?> Function(String, String) resolveAttachment,
+    required bool clearBookmarks,
   }) async {
     final copied = <(String, String), String>{};
     final messages = <Message>[];
     try {
-      // Each branch owns its media. Copy one attachment at a time to bound memory use.
-      for (final message in prefix) {
+      // Copies own their media. Stage one attachment at a time to bound memory use.
+      for (final message in sourceMessages) {
         for (final reference in message.attachmentRefs.toSet()) {
           final source = (message.chatId, reference);
           if (copied.containsKey(source)) continue;
-          final attachment = await loadAttachment(message.chatId, reference);
+          final attachment = await resolveAttachment(message.chatId, reference);
           if (attachment == null) {
             throw const ChatException(
               'An attachment in this conversation is unavailable.',
@@ -178,7 +220,7 @@ class ChatRepository {
         }
         messages.add(
           message.copyWith(
-            clearBookmark: true,
+            clearBookmark: clearBookmarks,
             messageId: _uuid.v4(),
             chatId: chatId,
             imagesUrls: [
@@ -199,6 +241,7 @@ class ChatRepository {
         options: options,
         newAttachments: const {},
         title: title,
+        projectId: projectId,
       );
       return messages;
     } catch (_) {
@@ -250,6 +293,17 @@ class ChatRepository {
     if (chat != null) {
       await Boxes.getChatHistory().put(chatId, chat.withDetails(title: name));
     }
+  }
+
+  Future<void> moveToProject(String chatId, String? projectId) async {
+    final chat = getChat(chatId);
+    if (chat == null)
+      throw const ChatException('This chat is no longer available.');
+    if (chat.projectId == projectId) return;
+    await Boxes.getChatHistory().put(
+      chatId,
+      chat.withDetails(projectId: projectId, clearProject: projectId == null),
+    );
   }
 
   List<ReplyBookmark> findBookmarks(Iterable<ChatHistory> chats, String query) {

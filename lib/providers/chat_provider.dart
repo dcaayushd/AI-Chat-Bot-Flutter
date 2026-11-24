@@ -7,11 +7,14 @@ import 'package:chatbotapp/apis/gemini_context.dart';
 import 'package:chatbotapp/hive/chat_draft_store.dart';
 import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/hive/chat_repository.dart';
+import 'package:chatbotapp/hive/project_repository.dart';
+import 'package:chatbotapp/models/chat_archive.dart';
 import 'package:chatbotapp/models/chat_attachment.dart';
 import 'package:chatbotapp/models/chat_document.dart';
 import 'package:chatbotapp/models/chat_image.dart';
 import 'package:chatbotapp/models/chat_mode.dart';
 import 'package:chatbotapp/models/chat_options.dart';
+import 'package:chatbotapp/models/chat_project.dart';
 import 'package:chatbotapp/models/message.dart';
 import 'package:chatbotapp/models/reply_bookmark.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
@@ -41,6 +44,7 @@ class ChatProvider extends ChangeNotifier {
   final ChatRepository _repository;
   final bool Function() _shouldSaveHistory;
   final String _developmentKey;
+  final _projects = ProjectRepository();
   late final _drafts = ChatDraftStore(onWriteStatusChanged: _notify);
 
   final List<Message> _messages = [];
@@ -48,6 +52,8 @@ class ChatProvider extends ChangeNotifier {
   _Reply? _reply;
   String _sessionKey = '';
   String _chatId = '';
+  String? _projectId;
+  int _projectRevision = 0;
   String? _title;
   String? _generationError;
   String? _storageError;
@@ -68,6 +74,9 @@ class ChatProvider extends ChangeNotifier {
   ChatMode get mode => _mode;
   ChatOptions get options => _options;
   String get currentChatId => _chatId;
+  ChatProject? get currentProject => _projects.get(_projectId);
+  List<ChatProject> get projects => _projects.list();
+  int get projectRevision => _projectRevision;
   String? get title => _title;
   int get conversationVersion => _conversationVersion;
   bool get hasMessages => _messages.isNotEmpty;
@@ -78,7 +87,8 @@ class ChatProvider extends ChangeNotifier {
   bool get historyOff => _sessionOnly || !_shouldSaveHistory();
   bool get canBranch =>
       hasMessages && !isBusy && !historyOff && _storageError == null;
-  String get draftText => historyOff ? '' : _drafts.read(_chatId);
+  String get draftText =>
+      historyOff ? '' : _drafts.read(_chatId, projectId: _projectId);
   bool get draftStorageError => _drafts.hasWriteError;
   String? get generationError => _generationError;
   String? get storageError => _storageError;
@@ -95,10 +105,61 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void rememberDraft(String text) {
-    if (!historyOff) _drafts.update(_chatId, text);
+    if (!historyOff) _drafts.update(_chatId, text, projectId: _projectId);
   }
 
   Future<void> flushDrafts() => _drafts.flush();
+
+  Future<ChatProject> saveProject({
+    String? id,
+    required String name,
+    String instructions = '',
+    String referenceNotes = '',
+  }) async {
+    _checkIdle();
+    _requireProject(id);
+    final project = ChatProject(
+      id: id ?? _uuid.v4(),
+      name: name,
+      instructions: instructions,
+      referenceNotes: referenceNotes,
+    );
+    await _changeConversation(() async {
+      await _projects.save(project);
+      _projectRevision++;
+    });
+    return project;
+  }
+
+  Future<void> removeProject(String id) async {
+    _checkIdle();
+    _requireProject(id);
+    await _changeConversation(() async {
+      // Missing project IDs are treated as unassigned when saved chats are reopened.
+      await _projects.delete(id);
+      _projectRevision++;
+      if (_projectId == id) {
+        _projectId = null;
+        if (_chatId.isEmpty) _conversationVersion++;
+      }
+      await _drafts.forget('', projectId: id);
+    });
+  }
+
+  Future<void> moveChatToProject(String chatId, String? projectId) async {
+    _checkIdle();
+    _requireProject(projectId);
+    await _changeConversation(() async {
+      await _repository.moveToProject(chatId, projectId);
+      if (_chatId == chatId) _projectId = projectId;
+    });
+  }
+
+  ChatProject? _requireProject(String? id) {
+    if (id == null) return null;
+    return _projects.get(id) ??
+        (throw const ChatException('This project is no longer available.'));
+  }
 
   int get visibleMessageCount {
     final reply = _reply;
@@ -301,6 +362,7 @@ class ChatProvider extends ChangeNotifier {
     final key = _apiKey;
     final mode = _mode;
     final options = _options;
+    final project = currentProject;
     _notify();
 
     var status = ReplyStatus.complete;
@@ -319,6 +381,7 @@ class ChatProvider extends ChangeNotifier {
           promptIndex: promptIndex,
           loadAttachment: attachmentFor,
           stopped: () => reply.stopped,
+          referenceNotes: project?.referenceNotes ?? '',
           suffix: continuing
               ? [
                   GeminiTurn(Role.assistant, prefix.substring(tailStart)),
@@ -339,6 +402,8 @@ class ChatProvider extends ChangeNotifier {
               turns: context.turns,
               abort: reply.abort.future,
               options: options,
+              projectInstructions: project?.instructions ?? '',
+              projectReference: context.projectReference,
             ),
           );
           reply.iterator = iterator;
@@ -451,6 +516,7 @@ class ChatProvider extends ChangeNotifier {
         mode: _mode,
         options: _options,
         newAttachments: _sessionAttachments,
+        projectId: currentProject?.id,
       );
       _sessionAttachments.clear();
       _storageError = null;
@@ -459,8 +525,8 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> newChat() => _changeConversation(() async {
-    _useConversation();
+  Future<void> newChat({String? projectId}) => _changeConversation(() async {
+    _useConversation(projectId: _requireProject(projectId)?.id);
   });
 
   Future<void> openChat(String chatId) async {
@@ -477,6 +543,7 @@ class ChatProvider extends ChangeNotifier {
         messages: messages,
         mode: ChatMode.fromName(chat.mode),
         options: ChatOptions.fromMap(chat.options),
+        projectId: _projects.get(chat.projectId)?.id,
       );
     });
   }
@@ -521,6 +588,7 @@ class ChatProvider extends ChangeNotifier {
     await _changeConversation(() async {
       final mode = _mode;
       final options = _options;
+      final projectId = currentProject?.id;
       final source = _title ?? 'Conversation';
       final title = 'Branch · ${String.fromCharCodes(source.runes.take(68))}';
       final messages = await _repository.saveBranch(
@@ -529,6 +597,7 @@ class ChatProvider extends ChangeNotifier {
         prefix: prefix,
         mode: mode,
         options: options,
+        projectId: projectId,
       );
       if (!_disposed) {
         _useConversation(
@@ -537,6 +606,7 @@ class ChatProvider extends ChangeNotifier {
           messages: messages,
           mode: mode,
           options: options,
+          projectId: projectId,
         );
       }
     });
@@ -548,7 +618,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       await _drafts.forget(chatId);
     } finally {
-      if (_chatId == chatId) _useConversation();
+      if (_chatId == chatId) _useConversation(projectId: currentProject?.id);
     }
   }, stopReply: _chatId == chatId);
 
@@ -566,7 +636,7 @@ class ChatProvider extends ChangeNotifier {
       } finally {
         if (hadNewDraft ||
             (hadSavedChat && _repository.getChat(chatId) == null)) {
-          _useConversation();
+          _useConversation(projectId: currentProject?.id);
         }
       }
     }, stopReply: activeIsSaved || !historyOff);
@@ -601,8 +671,10 @@ class ChatProvider extends ChangeNotifier {
     List<Message> messages = const [],
     ChatMode mode = ChatMode.general,
     ChatOptions options = const ChatOptions(),
+    String? projectId,
   }) {
     _chatId = chatId;
+    _projectId = projectId;
     _title = title;
     _messages
       ..clear()
@@ -647,6 +719,46 @@ class ChatProvider extends ChangeNotifier {
   Future<String> exportSavedChat(ChatHistory chat) async {
     final messages = await _repository.loadMessages(chat);
     return transcriptAsMarkdown(chat.displayTitle, messages);
+  }
+
+  Future<Uint8List> exportCurrentArchive() {
+    _checkIdle();
+    final chatId = _chatId;
+    final sessionFiles = Map<String, ChatAttachment>.of(_sessionAttachments);
+    return ChatArchive.encode(
+      title: _title ?? 'Conversation',
+      mode: _mode,
+      options: _options,
+      messages: List.of(_messages),
+      loadAttachment: (owner, reference) async =>
+          (owner == chatId ? sessionFiles[reference] : null) ??
+          await _repository.loadAttachment(owner, reference),
+    );
+  }
+
+  Future<Uint8List> exportSavedArchive(String chatId) async {
+    final chat = _repository.getChat(chatId);
+    if (chat == null)
+      throw const ChatException('This chat is no longer available.');
+    return ChatArchive.encode(
+      title: chat.displayTitle,
+      mode: ChatMode.fromName(chat.mode),
+      options: ChatOptions.fromMap(chat.options),
+      messages: await _repository.loadMessages(chat),
+      loadAttachment: _repository.loadAttachment,
+    );
+  }
+
+  Future<void> importArchive(ChatArchive archive, {String? projectId}) async {
+    _checkIdle();
+    final destination = _requireProject(projectId)?.id;
+    await _changeConversation(
+      () => _repository.restoreArchive(
+        chatId: _uuid.v4(),
+        archive: archive,
+        projectId: destination,
+      ),
+    );
   }
 
   void _notify() {

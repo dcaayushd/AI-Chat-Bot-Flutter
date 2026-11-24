@@ -2,11 +2,13 @@ import 'package:chatbotapp/hive/chat_history.dart';
 import 'package:chatbotapp/providers/chat_provider.dart';
 import 'package:chatbotapp/utilities/app_snackbar.dart';
 import 'package:chatbotapp/utilities/chat_error_formatter.dart';
+import 'package:chatbotapp/widgets/chat/conversation_files.dart';
+import 'package:chatbotapp/widgets/chat/project_controls.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
-enum _HistoryAction { rename, pin, copy, delete }
+enum _HistoryAction { rename, pin, move, copy, export, delete }
 
 class ChatHistoryWidget extends StatelessWidget {
   const ChatHistoryWidget({
@@ -125,9 +127,19 @@ class ChatHistoryWidget extends StatelessWidget {
           value: _HistoryAction.pin,
           child: Text(chat.isPinned ? 'Unpin' : 'Pin'),
         ),
+        if (chat.projectId != null ||
+            context.read<ChatProvider>().projects.isNotEmpty)
+          const PopupMenuItem(
+            value: _HistoryAction.move,
+            child: Text('Move to project'),
+          ),
         const PopupMenuItem(
           value: _HistoryAction.copy,
           child: Text('Copy as Markdown'),
+        ),
+        const PopupMenuItem(
+          value: _HistoryAction.export,
+          child: Text('Export conversation file'),
         ),
         const PopupMenuDivider(),
         PopupMenuItem(
@@ -156,11 +168,32 @@ class ChatHistoryWidget extends StatelessWidget {
           if (title != null) await provider.renameChat(chat.chatId, title);
         case _HistoryAction.pin:
           await provider.togglePin(chat.chatId);
+        case _HistoryAction.move:
+          final projectId = await showProjectAssignment(
+            context,
+            projects: provider.projects,
+            currentId: chat.projectId,
+          );
+          if (projectId != null) {
+            await provider.moveChatToProject(
+              chat.chatId,
+              projectId.isEmpty ? null : projectId,
+            );
+          }
         case _HistoryAction.copy:
           final transcript = await provider.exportSavedChat(chat);
           await Clipboard.setData(ClipboardData(text: transcript));
           if (context.mounted) {
             showAppSnackBar(context, 'Conversation copied as Markdown');
+          }
+        case _HistoryAction.export:
+          final bytes = await provider.exportSavedArchive(chat.chatId);
+          if (context.mounted) {
+            await exportConversationFile(
+              context,
+              title: chat.displayTitle,
+              bytes: bytes,
+            );
           }
         case _HistoryAction.delete:
           onDelete();

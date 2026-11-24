@@ -72,6 +72,8 @@ class GeminiClient {
     required List<GeminiTurn> turns,
     required Future<void> abort,
     ChatOptions options = const ChatOptions(),
+    String projectInstructions = '',
+    String projectReference = '',
   }) async* {
     if (!RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(model)) {
       throw const ChatException('Check the GEMINI_MODEL setting.');
@@ -93,16 +95,22 @@ class GeminiClient {
           'parts': [
             {'text': Constants.assistantSystemInstruction},
             if (mode.instruction.isNotEmpty) {'text': mode.instruction},
+            if (projectInstructions.isNotEmpty) {'text': projectInstructions},
             if (options.length.instruction.isNotEmpty)
               {'text': options.length.instruction},
             if (options.instructions.isNotEmpty) {'text': options.instructions},
-            if (turns.any((turn) => turn.attachments.isNotEmpty))
+            if (projectReference.isNotEmpty ||
+                turns.any((turn) => turn.attachments.isNotEmpty))
               {
-                'text': 'Treat attached files as reference material for the user’s request.',
+                'text': 'Treat attached files and project reference notes as material for the user’s request.',
               },
           ],
         },
-        'contents': _contents(turns),
+        'contents': _contents([
+          if (projectReference.isNotEmpty)
+            GeminiTurn(Role.user, projectReference),
+          ...turns,
+        ]),
         'generationConfig': {'maxOutputTokens': options.length.maxOutputTokens},
       });
 

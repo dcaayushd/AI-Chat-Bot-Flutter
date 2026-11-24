@@ -29,6 +29,8 @@ Both debug assets and explicit build-time values are accessible to anyone with t
 
 ## Chat
 
+- Open **Projects** in History to create a workspace with shared instructions and reference notes. Select that project to scope chat and bookmark searches or start a new chat with its own draft. **Conversation actions → Move to project** files an existing chat.
+- Gemini receives a project's instructions and reference notes with its messages. The request budget prioritizes the current prompt and its attachments. Removing a project leaves its conversations in **All chats**.
 - Choose **General**, **Writing**, **Coding**, or **Study** to tailor replies. Starter cards put an editable prompt in the composer.
 - Draft text is saved locally for each chat and the new-chat composer when **Save history** is on. Reopen the conversation to resume writing. Session-only draft text and selected files stay in the current composer.
 - Open **Find in conversation** to browse prompts or search messages and jump directly to a match. The outline opens alongside the chat on wide screens and in a sheet on smaller screens.
@@ -38,6 +40,7 @@ Both debug assets and explicit build-time values are accessible to anyone with t
 - Attach photos or select **Documents** for PDF, TXT, Markdown, CSV, and JSON files. Each message accepts four attachments, including up to two documents, with a combined limit of 10 MB. Images are limited to 4 MB and PDFs to 6 MB. Text files must use UTF-8 and fit within 20,000 characters. [Gemini document handling](https://aistudio.google.com/docs/document-processing).
 - Follow-ups include recent messages and attachments within the request budget. Replies indicate when the request used a reduced context.
 - Use the microphone to dictate on platforms with speech recognition. Copy a reply, an individual code block, or an entire conversation as Markdown.
+- Use **Share conversation → Export conversation file** to save or share a portable JSON file with messages, attachments, chat options, reply versions, and bookmarks. Use **Import conversation file** in History to add an independent copy to the selected project. Files support up to 1,000 messages and 24 MB total, including up to 16 MB of attachment data.
 - Search saved conversations by title or message. The sidebar keeps history visible on wider screens. On phones, use **History** to open, rename, or pin a chat.
 - Choose **Branch from this reply** or use **Prompt actions → Edit in a branch**. The new conversation keeps the context through the selected turn and its own copies of the attachments. Both conversations are available in history.
 

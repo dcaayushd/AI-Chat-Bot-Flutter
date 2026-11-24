@@ -8,6 +8,7 @@ class Constants {
   static const String chatMessagesBox = 'chat_messages_';
   static const String chatImagesBox = 'chat_images';
   static const String chatDraftsBox = 'chat_drafts';
+  static const String chatProjectsBox = 'chat_projects';
 
   static const String geminiDB = 'gemini.db';
   static const String geminiModel = 'gemini-3.5-flash-lite';

@@ -23,6 +23,7 @@ import 'package:chatbotapp/screens/chat_screen.dart';
 import 'package:chatbotapp/themes/my_theme.dart';
 import 'package:chatbotapp/widgets/bottom_chat_field.dart';
 import 'package:chatbotapp/widgets/chat/conversation_outline.dart';
+import 'package:chatbotapp/widgets/chat/chat_header.dart';
 
 Widget _app(ChatProvider chat, {ThemeMode themeMode = ThemeMode.light}) {
   return MultiProvider(
@@ -52,6 +53,7 @@ Future<void> _openWorkspaceStorage() async {
   await Hive.openBox<ChatHistory>(Constants.chatHistoryBox);
   await Hive.openLazyBox<Map>(Constants.chatImagesBox);
   await Hive.openBox<String>(Constants.chatDraftsBox);
+  await Hive.openBox<Map>(Constants.chatProjectsBox);
 }
 
 Future<void> _tapAndWait(
@@ -79,6 +81,136 @@ Future<void> _tapAndWait(
 }
 
 void main() {
+  testWidgets(
+    'creates, scopes, and moves conversations in the project workspace',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 860);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final chat = ChatProvider(developmentKey: '');
+      addTearDown(chat.dispose);
+      const chatId = 'unassigned-thread';
+      await tester.runAsync(() async {
+        await _openWorkspaceStorage();
+        final time = DateTime.now();
+        await Hive.box<ChatHistory>(Constants.chatHistoryBox).put(
+          chatId,
+          ChatHistory(
+            chatId: chatId,
+            prompt: 'An unassigned discussion',
+            response: 'A draft answer',
+            imagesUrls: [],
+            timestamp: time,
+            transcript: [
+              Message(
+                messageId: 'prompt',
+                chatId: chatId,
+                role: Role.user,
+                text: 'An unassigned discussion',
+                timeSent: time,
+              ).toMap(),
+              Message(
+                messageId: 'reply',
+                chatId: chatId,
+                role: Role.assistant,
+                text: 'A draft answer',
+                timeSent: time,
+              ).toMap(),
+            ],
+          ),
+        );
+      });
+      await tester.pumpWidget(_app(chat));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Projects'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('New project'));
+      await tester.pumpAndSettle();
+      Finder field(String label) => find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == label,
+      );
+      await tester.enterText(field('Project name'), 'Release plan');
+      await tester.enterText(
+        field('Project instructions'),
+        'Keep action items specific.',
+      );
+      await tester.enterText(field('Reference notes'), 'The beta is internal.');
+      await _tapAndWait(
+        tester,
+        chat,
+        find.text('Save project'),
+        () => !chat.isBusy && chat.projects.isNotEmpty,
+      );
+      final project = chat.projects.single;
+      expect(project.referenceNotes, 'The beta is internal.');
+      expect(find.text('An unassigned discussion'), findsNothing);
+      await _tapAndWait(
+        tester,
+        chat,
+        find.text('New chat'),
+        () => !chat.isBusy && chat.currentProject?.id == project.id,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(ChatHeader),
+          matching: find.text('Release plan'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Release plan'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(MenuItemButton, 'All chats'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => tester.tap(find.byTooltip('Conversation actions')),
+      );
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => tester.tap(find.text('Move to project')));
+      await tester.pumpAndSettle();
+      final assignment = find.descendant(
+        of: find.byType(SimpleDialog),
+        matching: find.text('Release plan'),
+      );
+      await _tapAndWait(
+        tester,
+        chat,
+        assignment,
+        () =>
+            !chat.isBusy &&
+            Hive.box<ChatHistory>(Constants.chatHistoryBox)
+                    .get(chatId)
+                    ?.projectId ==
+                project.id,
+      );
+
+      tester.view.physicalSize = const Size(390, 780);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('History'));
+      await tester.pumpAndSettle();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 590);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Import conversation file'), findsNothing);
+      tester.view.resetViewInsets();
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, 'All chats'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(MenuItemButton, 'Release plan'));
+      await tester.pumpAndSettle();
+      await _tapAndWait(
+        tester,
+        chat,
+        find.text('An unassigned discussion'),
+        () => !chat.isBusy && chat.currentChatId == chatId,
+      );
+      expect(chat.currentProject?.id, project.id);
+    },
+  );
+
   testWidgets('selecting a response mode updates starter drafts', (
     tester,
   ) async {
